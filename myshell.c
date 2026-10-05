@@ -9,10 +9,9 @@
 
 
 
-int parse_command(char line[], char *args[], int *counter)
+int parse_command(char line[], char *args[], int *counter, char **file, char operator[])
 {
-    char *file; // pointer to the filename after each operator
-    char *operator[5];
+
     //scan line for output redirection operators 
 
     for (int i=0; line[i]!= '\0'; i++)
@@ -26,6 +25,11 @@ int parse_command(char line[], char *args[], int *counter)
 
             file = &line[i+2];
 
+            //command ends before the operator
+            line[i] = '\0';
+
+            break;
+
         }
         
         else if(line[i] == '>')
@@ -35,6 +39,11 @@ int parse_command(char line[], char *args[], int *counter)
             operator[1] = '\0';
            
             file = &line[i+1];
+
+            //command ends before the operator
+            line[i] = '\0';
+
+            break;
         }
 
 
@@ -48,6 +57,11 @@ int parse_command(char line[], char *args[], int *counter)
 
             file = &line[i+3];
 
+            //command ends before the operator
+            line[i] = '\0';
+
+            break;
+
         }
         
         else if(line[i] == '2' && line[i+1] == '>')
@@ -59,12 +73,28 @@ int parse_command(char line[], char *args[], int *counter)
 
             file = &line[i+2];
 
+            //command ends before the operator
+            line[i] = '\0';
+
+            break;
+
         }
 
     }
+
+    //remove any potential spaces before filename 
+
+    if(*file != NULL)
+    {
+        while(**file == ' ' || **file == '\t')
+        {
+            (*file)++;
+        }
+    }
+
     
 
-    //parse 
+    // tokenize commands
     char *word = strtok(line, " \t"); //split lines on spaces or tabs
     while (word != NULL && counter < size-1)
     {
@@ -84,7 +114,7 @@ int parse_command(char line[], char *args[], int *counter)
         return 1; //if command is exit, stop the shell program completely
     }
 
-    return 2;  // if 2 is returned by the parse coomand, the we can go ahead to do the forking
+    return 2;  // if 2 is returned by the parse command, then the command is normal and we go ahead with other functions
 
 }
 int main(int argc, char *argv[])
@@ -93,6 +123,8 @@ int main(int argc, char *argv[])
     char line[size];
     char *args[size];
     int status;
+    char *file;
+    char ops;
  
 
     while(1)
@@ -104,7 +136,7 @@ int main(int argc, char *argv[])
             int counter = 0;
             line[strcspn(line, "\n")] = '\0'; //strip trailing newline and replace with the null terminator
 
-            int result =parse_command(line, args, &counter); //call the parse command function
+            int result =parse_command(line, args, &counter,&file,ops); //call the parse command function
 
             if(result == 0)
             {
@@ -127,6 +159,66 @@ int main(int argc, char *argv[])
 
             else if (pid == 0) //CHILD
             {
+                int fd;
+
+                if(strcmp(ops, ">") == 0)
+                {
+
+                    fd = = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    if (fd < 0)
+                    {
+                        perror("ERROR: Could not open file");
+                        exit(EXIT_FAILURE);
+
+                    }
+
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+
+                }
+
+                else if(strcmp(ops, ">>") == 0)
+                {
+                    fd = = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                    if (fd < 0)
+                    {
+                        perror("ERROR: Could not open file");
+                        exit(EXIT_FAILURE);
+
+                    }
+
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                }
+
+                else if(strcmp(ops, "2>") == 0)
+                {
+                    fd = = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    if (fd < 0)
+                    {
+                        perror("ERROR: Could not open file");
+                        exit(EXIT_FAILURE);
+
+                    }
+
+                    dup2(fd, STDERR_FILENO);
+                    close(fd);
+                }
+
+                else if(strcmp(ops, "2>>") == 0)
+                {
+                    fd = = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                    if (fd < 0)
+                    {
+                        perror("ERROR: Could not open file");
+                        exit(EXIT_FAILURE);
+
+                    }
+
+                    dup2(fd, STDERR_FILENO);
+                    close(fd);
+                }
+
                 execvp(args[0],args);
 
                 perror("command failed");
