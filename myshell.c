@@ -4,7 +4,7 @@
 #include<stdlib.h> // exit, EXIT_SUCCESS
 #include<sys/wait.h> // for wait(),...
 #include<string.h> //for strcspn(), strcmp(),...
-#define SIZE 200
+#define SIZE 250
 int main(int argc, char *argv[])
 {
     //shell setup 
