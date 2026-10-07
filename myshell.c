@@ -7,23 +7,35 @@
 #include<fcntl.h> //for open, close 
 #define size 256
 
-
-
-int parse_command(char line[], char *args[], int *counter, char **file, char operator[])
+typedef struct
 {
+    char *args[size]; //command and its arguments
+    int counter; //number of arguments 
+    char operator[4]; // >, >>, 2>, 2>>
+    char *file; //filename used for redirection
+} Command;
+
+int parse_command(char line[], Command *command)
+{
+
+    //initialize the command
+    command->counter = 0;
+    command -> file = NULL;
+    command -> operator[0] = '\0';
 
     //scan line for output redirection operators 
 
     for (int i=0; line[i]!= '\0'; i++)
     {
+        //found >>
         if (line[i] == '>' && line[i+1]=='>')
         {
-            //found >>
-            operator[0] = line[i];
-            operator[1] = line[i+1];
-            operator[2] = '\0';
+            
+            command -> operator[0] = line[i];
+            command -> operator[1] = line[i+1];
+            command -> operator[2] = '\0';
 
-            file = &line[i+2];
+            command -> file = &line[i+2];
 
             //command ends before the operator
             line[i] = '\0';
@@ -32,13 +44,14 @@ int parse_command(char line[], char *args[], int *counter, char **file, char ope
 
         }
         
+        //found >
         else if(line[i] == '>')
         {
-            //found >
-            operator[0] = line[i];
-            operator[1] = '\0';
+            
+            command->operator[0] = line[i];
+            command->operator[1] = '\0';
            
-            file = &line[i+1];
+            command->file = &line[i+1];
 
             //command ends before the operator
             line[i] = '\0';
@@ -47,15 +60,16 @@ int parse_command(char line[], char *args[], int *counter, char **file, char ope
         }
 
 
+        //found 2>>
         else if (line[i] == '2' && line[i+1] == '>' && line[i+2] == '>')
         {
-            //found 2>>
-            operator[0] = line[i];
-            operator[1] = line[i+1];
-            operator[2] = line[i+2];
-            operator[3] = '\0';
+            
+            command->operator[0] = line[i];
+            command->operator[1] = line[i+1];
+            command->operator[2] = line[i+2];
+            command->operator[3] = '\0';
 
-            file = &line[i+3];
+            command->file = &line[i+3];
 
             //command ends before the operator
             line[i] = '\0';
@@ -64,14 +78,15 @@ int parse_command(char line[], char *args[], int *counter, char **file, char ope
 
         }
         
+        //found 2>
         else if(line[i] == '2' && line[i+1] == '>')
         {
-            //found 2>
-            operator[0] = line[i];
-            operator[1] = line[i+1];
-            operator[2] = '\0';
+            
+            command->operator[0] = line[i];
+            command->operator[1] = line[i+1];
+            command->operator[2] = '\0';
 
-            file = &line[i+2];
+            command->file = &line[i+2];
 
             //command ends before the operator
             line[i] = '\0';
@@ -84,32 +99,45 @@ int parse_command(char line[], char *args[], int *counter, char **file, char ope
 
     //remove any potential spaces before filename 
 
-    if(*file != NULL)
+    if(command->file != NULL)
     {
-        while(**file == ' ' || **file == '\t')
+        while(*command->file == ' ' || *command->file == '\t')
         {
-            (*file)++;
+            command->file++;
         }
+    }
+
+    //Redirection operator was found, but no filename was given
+    if(*command->file == '\0')
+    {
+        return -1;
     }
 
     
 
-    // tokenize commands
+    // Tokenize commands
     char *word = strtok(line, " \t"); //split lines on spaces or tabs
-    while (word != NULL && counter < size-1)
+
+    while (word != NULL && command->counter < size-1)
     {
-        args[*counter] = word; // stores the pointer to commands
-        (*counter)++;
+        command->args[command->counter] = word; // stores the pointer to commands
+        command->counter++;
+
         word = strtok(NULL, " \t"); //split input by spaces or tabs
     }
-    args[*counter] = NULL;
 
-    if (*counter == 0) // user didn't enter a command
+    command->args[command->counter] = NULL;
+
+    // Empty command 
+
+    if (command->counter == 0) 
     {
         return 0;
     }
 
-    if(strcmp(args[0], "exit") == 0)
+    //check for exit command
+
+    if(strcmp(command->args[0], "exit") == 0)
     {
         return 1; //if command is exit, stop the shell program completely
     }
@@ -117,26 +145,86 @@ int parse_command(char line[], char *args[], int *counter, char **file, char ope
     return 2;  // if 2 is returned by the parse command, then the command is normal and we go ahead with other functions
 
 }
+
+int find_pipes(char line[], Command commands[])
+{
+    int *result;
+    char* command_lines[size];
+    int commandctr =1;
+
+    //first command starts at the beginning of the line
+    command_lines[0] = line;
+
+    //scan line for pipes 
+
+    for (int i=0; i < strlen(line); i++)
+    {
+        if (line[i] == '|')
+        {
+            //found
+            //command ends before the operator; replace the pipe with '\0'
+            line[i] = '\0';
+
+            command_lines[commandctr] = &line[i+1]; //comannd [1] points to the beginning of the next command
+            commandctr++;
+
+        }  
+
+    }
+
+    //Parse each individual command
+
+    for(int i=0; i< commandctr ; i++)
+    {
+        int parse_result = parse_command(command_lines[i], &commands[i]);
+
+        //Error
+        if(parse_result == -1)
+        {
+            *result = -1;
+            return commandctr;
+        }
+
+        //Empty command
+        else if(parse_result == 0)
+        {
+            *result = 0; 
+            return commandctr;
+        }
+
+        //Exit command
+        else if (parse_result == 1)
+        {
+            *result = 1;
+            return commandctr;
+        }
+    }
+
+    //if all commands were valid
+    *result = 2;
+
+    return commandctr;
+
+}
+
 int main(int argc, char *argv[])
 {
-    //shell setup 
-    char line[size];
-    char *args[size];
+    char line [size];
+    Command commands[size];
     int status;
-    char *file;
-    char ops;
  
-
     while(1)
     {
         printf("$ ");
 
         if (fgets(line, sizeof(line), stdin)!=NULL)
         {
-            int counter = 0;
+            //int counter = 0;
             line[strcspn(line, "\n")] = '\0'; //strip trailing newline and replace with the null terminator
 
-            int result =parse_command(line, args, &counter,&file,ops); //call the parse command function
+            int commandctr = find_pipes(line,commands);
+
+            int result = parse_command(line, Command*); //call the parse command function
 
             if(result == 0)
             {
@@ -229,10 +317,21 @@ int main(int argc, char *argv[])
 
             else { //PARENT
 
+                int n; //numbe rof commands
+                int pipes = n-1;
+
+                int fd[2];
+
+
                 waitpid(pid,&status,0); //wait for a specific child by referring to the pid
                 if(WIFEXITED(status))
                 {
                     printf(" Command not found\n");
+                }
+
+                else{
+                    int fd[2];
+
                 }
 
 
