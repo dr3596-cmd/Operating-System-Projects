@@ -6,7 +6,7 @@
 
 #include "parser.h"
 
-enum TokenType
+enum TokenType //token type identifies operator / word (cmd name, arg, filename... parse_command() dets word's role from its position)
 {
     TOKEN_END,
     TOKEN_WORD,
@@ -20,13 +20,13 @@ enum TokenType
 
 static int next_token(const char **cursor, char word[MAX_SIZE]) //read 1 token from pipe segment
 {
-    const char *p = *cursor;
+    const char *p = *cursor; //cursor points to caller's current pos in segment. updated to let next call continue
 
-    while (*p==' ' || *p=='\t') {
+    while (*p==' ' || *p=='\t') { //ignore spaces/tabs separating tokens
         p++;
     }
 
-    if (*p=='\0') {
+    if (*p=='\0') { //segment end
         *cursor=p;
         return TOKEN_END;
     }
@@ -35,22 +35,22 @@ static int next_token(const char **cursor, char word[MAX_SIZE]) //read 1 token f
         p+=2; //move pointer
 
         if (*p=='>')  {
-            *cursor = p+1;
-            return TOKEN_ERROR_APPEND; //2>>
+            *cursor = p+1; //to identify append vs truncation
+            return TOKEN_ERROR_APPEND; 
         }
         *cursor=p;
         return TOKEN_ERROR;
     }
 
-    if (*p=='<') {
+    if (*p=='<') { // < --input redir
         *cursor = p+1;
         return TOKEN_INPUT;
     }
 
-    if (*p=='>')  {
+    if (*p=='>')  { // > --stdout truncation
         p++;
 
-        if (*p=='>') {
+        if (*p=='>') { // >> --stdout append
             *cursor = p+1;
             return TOKEN_APPEND;
         }
@@ -61,37 +61,37 @@ static int next_token(const char **cursor, char word[MAX_SIZE]) //read 1 token f
 
     size_t length = 0;
 
-    while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '<' && *p != '>') { //" " & \ etc not supported in this phase
-        if (*p == '\'' || *p == '"' || *p == '\\' || *p == '|') {
+    while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '<' && *p != '>') { //extract word until whitespace/redir operator/end of segment
+        if (*p == '\'' || *p == '"' || *p == '\\' || *p == '|') { //this phase doesnt support these
             fprintf(stderr, "Error: Unsupported quoting, escape, or pipe syntax.\n");
             return TOKEN_INVALID;
         }
 
-        if (length >= MAX_SIZE-1) {
+        if (length >= MAX_SIZE-1) { //final array pos for null terminator
             fprintf(stderr, "Error: Token is too long.\n");
             return TOKEN_INVALID;
         }
 
-        word[length] = *p;
+        word[length] = *p; 
         length++;
         p++;
     }
 
-    word[length] = '\0';
+    word[length] = '\0'; //valid string. record where tokenization should resume
     *cursor = p;
-    return TOKEN_WORD;
+    return TOKEN_WORD; //extracted text copied into word
 }
 
 static char *store_word(Command *command, const char *word) //copy token into Command storage
 {
-    size_t bytes = strlen(word)+1;
+    size_t bytes = strlen(word)+1; //including \0
 
-    if (bytes>sizeof(command->text) - command->text_used) {
+    if (bytes>sizeof(command->text) - command->text_used) { //check remaining capacity
         fprintf(stderr, "Error: Command token storage exceeded.\n");
         return NULL;
     }
 
-    char *destination = &command->text[command->text_used];
+    char *destination = &command->text[command->text_used]; //write to storage array
 
     memcpy(destination,word,bytes);
     command->text_used += bytes;
@@ -127,7 +127,7 @@ int parse_command(char line[], Command *command)
         }
 
         if (token==TOKEN_WORD){ //normal cmd name / arg
-            if (command->counter >= MAX_SIZE-1) {
+            if (command->counter >= MAX_SIZE-1) { //leave 1 entry for null pointer @end
                 fprintf(stderr,"Error: Too many arguments.\n");
                 return -1;
             }
@@ -141,7 +141,7 @@ int parse_command(char line[], Command *command)
             command->args[command->counter]=argument;
             command->counter++;
 
-            continue;
+            continue; //this token completed. reads next token from segment
         }
 
         int filename_token = next_token(&cursor,word); //redirection operator found == next token is filename
@@ -163,7 +163,7 @@ int parse_command(char line[], Command *command)
             return -1;
         }
 
-        if (command->redirection_count >= MAX_SIZE) {
+        if (command->redirection_count >= MAX_SIZE) { //capacity check before next redir entry
             fprintf(stderr,"Error: Too many redirections.\n");
             return -1;
         }
@@ -179,41 +179,41 @@ int parse_command(char line[], Command *command)
         redirection->file = filename;
 
         //found >>.
-        if (token==TOKEN_APPEND) {
+        if (token==TOKEN_APPEND) { // >> appends stoutput to file
             redirection->target = STDOUT_FILENO;
-            redirection->flags = O_WRONLY | O_CREAT | O_APPEND;
+            redirection->flags = O_WRONLY | O_CREAT | O_APPEND; //O_CREAT allows output file creation. O_APPEND preserves content.
         }
 
         //found >.
-        else if (token==TOKEN_OUTPUT) {
+        else if (token==TOKEN_OUTPUT) { // > replaces existing content w stoutput
             redirection->target = STDOUT_FILENO;
-            redirection->flags = O_WRONLY | O_CREAT | O_TRUNC;
+            redirection->flags = O_WRONLY | O_CREAT | O_TRUNC; //O_TRUNC clears existing content
         }
 
         //found 2>>.
-        else if (token==TOKEN_ERROR_APPEND)  {
+        else if (token==TOKEN_ERROR_APPEND)  { // 2>> appends sterror to file
             redirection->target = STDERR_FILENO;
             redirection->flags = O_WRONLY | O_CREAT | O_APPEND;
         }
 
         //found 2>.
-        else if (token==TOKEN_ERROR)  {
+        else if (token==TOKEN_ERROR)  { // 2> replaces existing content w sterror
             redirection->target = STDERR_FILENO;
             redirection->flags = O_WRONLY | O_CREAT | O_TRUNC;
         }
 
         //found <.
-        else if (token == TOKEN_INPUT) {
+        else if (token == TOKEN_INPUT) { // < reads exisitng file through stinput
             redirection->target = STDIN_FILENO;
             redirection->flags = O_RDONLY;
         }
 
         else {
-            fprintf(stderr,"Error: Invalid redirection operator.\n");
+            fprintf(stderr,"Error: Invalid redirection operator.\n"); //unexpected token
             return -1;
         }
 
-        command->redirection_count++;
+        command->redirection_count++; //every operation in input order
     }
 
 // // PARSING
