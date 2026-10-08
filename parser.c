@@ -1,164 +1,375 @@
 #include<stdio.h> // for printf, sscanf,..
 #include<string.h> //for strcspn(), strcmp(),...
+#include<unistd.h> // for fork(),exec() family,..
+#include<fcntl.h> //for open, close 
+
 
 #include "parser.h"
 
+enum TokenType
+{
+    TOKEN_END,
+    TOKEN_WORD,
+    TOKEN_INPUT,
+    TOKEN_OUTPUT,
+    TOKEN_APPEND,
+    TOKEN_ERROR,
+    TOKEN_ERROR_APPEND,
+    TOKEN_INVALID
+};
 
+static int next_token(const char **cursor, char word[MAX_SIZE]) //read 1 token from pipe segment
+{
+    const char *p = *cursor;
 
-// PARSING
+    while (*p==' ' || *p=='\t') {
+        p++;
+    }
+
+    if (*p=='\0') {
+        *cursor=p;
+        return TOKEN_END;
+    }
+
+    if (p[0]=='2' && p[1]=='>') { //2> operator
+        p+=2; //move pointer
+
+        if (*p=='>')  {
+            *cursor = p+1;
+            return TOKEN_ERROR_APPEND; //2>>
+        }
+        *cursor=p;
+        return TOKEN_ERROR;
+    }
+
+    if (*p=='<') {
+        *cursor = p+1;
+        return TOKEN_INPUT;
+    }
+
+    if (*p=='>')  {
+        p++;
+
+        if (*p=='>') {
+            *cursor = p+1;
+            return TOKEN_APPEND;
+        }
+
+        *cursor = p;
+        return TOKEN_OUTPUT;
+    }
+
+    size_t length = 0;
+
+    while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '<' && *p != '>') { //" " & \ etc not supported in this phase
+        if (*p == '\'' || *p == '"' || *p == '\\' || *p == '|') {
+            fprintf(stderr, "Error: Unsupported quoting, escape, or pipe syntax.\n");
+            return TOKEN_INVALID;
+        }
+
+        if (length >= MAX_SIZE-1) {
+            fprintf(stderr, "Error: Token is too long.\n");
+            return TOKEN_INVALID;
+        }
+
+        word[length] = *p;
+        length++;
+        p++;
+    }
+
+    word[length] = '\0';
+    *cursor = p;
+    return TOKEN_WORD;
+}
+
+static char *store_word(Command *command, const char *word) //copy token into Command storage
+{
+    size_t bytes = strlen(word)+1;
+
+    if (bytes>sizeof(command->text) - command->text_used) {
+        fprintf(stderr, "Error: Command token storage exceeded.\n");
+        return NULL;
+    }
+
+    char *destination = &command->text[command->text_used];
+
+    memcpy(destination,word,bytes);
+    command->text_used += bytes;
+
+    return destination;
+}
+
 
 int parse_command(char line[], Command *command)
 {
 
     //initialize the command
     command->counter = 0;
-    command -> file = NULL;
-    command -> operator[0] = '\0';
-    command -> err_file = NULL;
-    command-> err_op[0] = '\0';
+    command->redirection_count = 0;
+    command->text_used = 0;
+    command->args[0] = NULL;
+
+    const char *cursor = line;
+    char word[MAX_SIZE];
 
     //scan line for output redirection operators 
 
-    int len = strlen(line);
-    for (int i=0; i< len; i++)
+    while(1)
     {
-        //found >>
-        if (line[i] == '>' && line[i+1]=='>')
-        {
-            
-            command -> operator[0] = line[i];
-            command -> operator[1] = line[i+1];
-            command -> operator[2] = '\0';
+        int token = next_token(&cursor,word);
 
-            command -> file = &line[i+2];
-
-            //command ends before the operator
-            line[i] = '\0';
-
-            i++; //skip the second '>' so it is not read as a new operator;
-
+        if (token==TOKEN_END) {
+            break;
         }
-        
-        //found >
-        else if(line[i] == '>')
-        {
+
+        if (token==TOKEN_INVALID) {
+            return -1;
+        }
+
+        if (token==TOKEN_WORD){ //normal cmd name / arg
+            if (command->counter >= MAX_SIZE-1) {
+                fprintf(stderr,"Error: Too many arguments.\n");
+                return -1;
+            }
+
+            char *argument = store_word(command,word);
+
+            if (argument==NULL) {
+                return -1;
+            }
+
+            command->args[command->counter]=argument;
+            command->counter++;
+
+            continue;
+        }
+
+        int filename_token = next_token(&cursor,word); //redirection operator found == next token is filename
+        if (filename_token==TOKEN_INVALID)  {
+            return -1;
+        }
+
+        if (filename_token != TOKEN_WORD) {
+            if (token==TOKEN_INPUT) {
+                fprintf(stderr,"Error: Input file not specified.\n");
+            }
+            else if (token==TOKEN_ERROR || token==TOKEN_ERROR_APPEND) {
+                fprintf(stderr,"Error: Error output file not specified.\n");
+            }
+            else {
+                fprintf(stderr,"Error: Output file not specified.\n");
+            }
+
+            return -1;
+        }
+
+        if (command->redirection_count >= MAX_SIZE) {
+            fprintf(stderr,"Error: Too many redirections.\n");
+            return -1;
+        }
+
+        char *filename = store_word(command,word);
+
+        if (filename==NULL) {
+            return -1;
+        }
+
+        Redirection *redirection = &command->redirections[command->redirection_count];
+
+        redirection->file = filename;
+
+        //found >>.
+        if (token==TOKEN_APPEND) {
+            redirection->target = STDOUT_FILENO;
+            redirection->flags = O_WRONLY | O_CREAT | O_APPEND;
+        }
+
+        //found >.
+        else if (token==TOKEN_OUTPUT) {
+            redirection->target = STDOUT_FILENO;
+            redirection->flags = O_WRONLY | O_CREAT | O_TRUNC;
+        }
+
+        //found 2>>.
+        else if (token==TOKEN_ERROR_APPEND)  {
+            redirection->target = STDERR_FILENO;
+            redirection->flags = O_WRONLY | O_CREAT | O_APPEND;
+        }
+
+        //found 2>.
+        else if (token==TOKEN_ERROR)  {
+            redirection->target = STDERR_FILENO;
+            redirection->flags = O_WRONLY | O_CREAT | O_TRUNC;
+        }
+
+        //found <.
+        else if (token == TOKEN_INPUT) {
+            redirection->target = STDIN_FILENO;
+            redirection->flags = O_RDONLY;
+        }
+
+        else {
+            fprintf(stderr,"Error: Invalid redirection operator.\n");
+            return -1;
+        }
+
+        command->redirection_count++;
+    }
+
+// // PARSING
+
+// int parse_command(char line[], Command *command)
+// {
+
+//     //initialize the command
+//     command->counter = 0;
+//     command -> file = NULL;
+//     command -> operator[0] = '\0';
+//     command -> err_file = NULL;
+//     command-> err_op[0] = '\0';
+
+//     //scan line for output redirection operators 
+
+//     int len = strlen(line);
+//     for (int i=0; i< len; i++)
+//     {
+//         //found >>
+//         if (line[i] == '>' && line[i+1]=='>')
+//         {
             
-            command->operator[0] = line[i];
-            command->operator[1] = '\0';
+//             command -> operator[0] = line[i];
+//             command -> operator[1] = line[i+1];
+//             command -> operator[2] = '\0';
+
+//             command -> file = &line[i+2];
+
+//             //command ends before the operator
+//             line[i] = '\0';
+
+//             i++; //skip the second '>' so it is not read as a new operator;
+
+//         }
+        
+//         //found >
+//         else if(line[i] == '>')
+//         {
+            
+//             command->operator[0] = line[i];
+//             command->operator[1] = '\0';
            
-            command->file = &line[i+1];
+//             command->file = &line[i+1];
 
-            //command ends before the operator
-            line[i] = '\0';
+//             //command ends before the operator
+//             line[i] = '\0';
 
             
-        }
+//         }
 
 
-        //found 2>>
-        else if (line[i] == '2' && line[i+1] == '>' && line[i+2] == '>' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'))
-        {
+//         //found 2>>
+//         else if (line[i] == '2' && line[i+1] == '>' && line[i+2] == '>' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'))
+//         {
             
-            command->err_op[0] = line[i];
-            command->err_op[1] = line[i+1];
-            command->err_op[2] = line[i+2];
-            command->err_op[3] = '\0';
+//             command->err_op[0] = line[i];
+//             command->err_op[1] = line[i+1];
+//             command->err_op[2] = line[i+2];
+//             command->err_op[3] = '\0';
 
-            command->err_file = &line[i+3];
+//             command->err_file = &line[i+3];
 
-            //command ends before the operator
-            line[i] = '\0';
+//             //command ends before the operator
+//             line[i] = '\0';
 
-            i += 2; //skip the two '>' characters
+//             i += 2; //skip the two '>' characters
 
-        }
+//         }
         
-        //found 2>
-        else if(line[i] == '2' && line[i+1] == '>' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'))
-        {
+//         //found 2>
+//         else if(line[i] == '2' && line[i+1] == '>' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'))
+//         {
             
-            command->err_op[0] = line[i];
-            command->err_op[1] = line[i+1];
-            command->err_op[2] = '\0';
+//             command->err_op[0] = line[i];
+//             command->err_op[1] = line[i+1];
+//             command->err_op[2] = '\0';
 
-            command->err_file = &line[i+2];
+//             command->err_file = &line[i+2];
 
-            //command ends before the operator
-            line[i] = '\0';
+//             //command ends before the operator
+//             line[i] = '\0';
 
-            i++; //skip the '>'
+//             i++; //skip the '>'
 
-        }
+//         }
 
-    }
+//     }
 
-    //check the output filename 
+//     //check the output filename 
 
-    if(command->operator[0] != '\0')
-    {
-        //remove any spaces before filename
-        while (*command -> file == ' ' || *command->file == '\t')
-        {
-            command->file++;
-        }
-    }
+//     if(command->operator[0] != '\0')
+//     {
+//         //remove any spaces before filename
+//         while (*command -> file == ' ' || *command->file == '\t')
+//         {
+//             command->file++;
+//         }
+//     }
 
-    if(command->file != NULL)
-    {
-        while(*command->file == ' ' || *command->file == '\t')
-        {
-            command->file++;
-        }
+//     if(command->file != NULL)
+//     {
+//         while(*command->file == ' ' || *command->file == '\t')
+//         {
+//             command->file++;
+//         }
 
-        //Redirection operator was found, but no filename was given
-        if(*command->file == '\0')
-        {
-            fprintf(stderr, "Error: output file not specified. \n");
-            return -1;
-        }
+//         //Redirection operator was found, but no filename was given
+//         if(*command->file == '\0')
+//         {
+//             fprintf(stderr, "Error: output file not specified. \n");
+//             return -1;
+//         }
 
-        //filename ends at the first space or tab
-        command->file[strcspn(command->file, " \t")] = '\0';
-    }
+//         //filename ends at the first space or tab
+//         command->file[strcspn(command->file, " \t")] = '\0';
+//     }
 
-    //check the error filename 
-    if(command->err_op[0] != '\0')
-    {
-        //remove any spaces before filename
-        while (*command -> err_file == ' ' || *command->err_file == '\t')
-        {
-            command->err_file++;
-        }
+//     //check the error filename 
+//     if(command->err_op[0] != '\0')
+//     {
+//         //remove any spaces before filename
+//         while (*command -> err_file == ' ' || *command->err_file == '\t')
+//         {
+//             command->err_file++;
+//         }
 
-        //Redirection operator was found, but no filename was given
-        if(*command->err_file == '\0')
-        {
-            fprintf(stderr, "Error: output file not specified. \n");
-            return -1;
-        }
+//         //Redirection operator was found, but no filename was given
+//         if(*command->err_file == '\0')
+//         {
+//             fprintf(stderr, "Error: output file not specified. \n");
+//             return -1;
+//         }
 
-        //filename ends at the first space or tab
-        command->err_file[strcspn(command->err_file, " \t")] = '\0';
-    }
+//         //filename ends at the first space or tab
+//         command->err_file[strcspn(command->err_file, " \t")] = '\0';
+//     }
 
-    // Tokenize commands
-    char *word = strtok(line, " \t"); //split lines on tabs
+//     // Tokenize commands
+//     char *word = strtok(line, " \t"); //split lines on tabs
 
-    while (word != NULL && command->counter < MAX_SIZE-1)
-    {
+//     while (word != NULL && command->counter < MAX_SIZE-1)
+//     {
 
-        //Remove quotes around commands so they are not read together
-        int length = strlen(word);
-        if(length >= 2 && ((word[0] == '"' && word[length - 1] == '"') || (word[length-1] == '\'')))
-        {
-            word [length -1] = '\0';
-            word++;
-        }
-        command->args[command->counter] = word; // stores the pointer to commands
-        command->counter++;
+//         //Remove quotes around commands so they are not read together
+//         int length = strlen(word);
+//         if(length >= 2 && ((word[0] == '"' && word[length - 1] == '"') || (word[length-1] == '\'')))
+//         {
+//             word [length -1] = '\0';
+//             word++;
+//         }
+//         command->args[command->counter] = word; // stores the pointer to commands
+//         command->counter++;
 
-        word = strtok(NULL, " \t"); //split input by tabs
-    }
+//         word = strtok(NULL, " \t"); //split input by tabs
+//     }
 
     command->args[command->counter] = NULL;
 
@@ -166,6 +377,10 @@ int parse_command(char line[], Command *command)
 
     if (command->counter == 0) 
     {
+        if (command->redirection_count > 0) { //redirection exist but no cmd name found --like "> output.txt"
+            fprintf(stderr,"Error: Command missing.\n");
+            return -1;
+        }
         return 0;
     }
 
@@ -259,9 +474,20 @@ int find_pipes(char line[], Command commands[], int *result)
 
 
         //Exit command; stops the shell if it is the only command 
-        else if (parse_result == 1 && commandctr == 1)
-        {
-            *result = 1;
+        // else if (parse_result == 1 && commandctr == 1)
+        // {
+        //     *result = 1;
+        //     return commandctr;
+        // }
+        else if (parse_result==1) {
+            if (commandctr==1) {
+                *result=1;
+            }
+            else {
+                fprintf(stderr,"Error: exit is not supported inside a pipeline.\n"); //exit must be its own separate cmd
+                *result= -1;
+            }
+
             return commandctr;
         }
     }

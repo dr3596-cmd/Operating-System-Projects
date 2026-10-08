@@ -88,48 +88,72 @@ void execute_commands(Command commands[], int commandctr)
 
             // REDIRECTION
 
-            char *operators[2] = {commands[i].operator, commands[i].err_op};
-            char *file[2] = {commands[i].file, commands[i].err_file};
-            int targets[2] = {STDOUT_FILENO, STDERR_FILENO};
+            // char *operators[2] = {commands[i].operator, commands[i].err_op};
+            // char *file[2] = {commands[i].file, commands[i].err_file};
+            // int targets[2] = {STDOUT_FILENO, STDERR_FILENO};
 
-            for (int k=0; k<2; k++)
-            {
-                if(operators[k][0] == '\0')
-                {
-                    continue; // the stream is not redirected
-                }
+            // for (int k=0; k<2; k++)
+            // {
+            //     if(operators[k][0] == '\0')
+            //     {
+            //         continue; // the stream is not redirected
+            //     }
 
-                int append = (strcmp(operators[k], ">>") == 0 || strcmp(operators[k], "2>>")==0);
+            //     int append = (strcmp(operators[k], ">>") == 0 || strcmp(operators[k], "2>>")==0);
 
-                int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+            //     int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
             
 
-                int file_fd = open(file[k], flags, 0644);
+            //     int file_fd = open(file[k], flags, 0644);
 
-                if(file_fd < 0)
-                {
-                    perror(file[k]);
-                    exit(EXIT_FAILURE);
+            //     if(file_fd < 0)
+            //     {
+            //         perror(file[k]);
+            //         exit(EXIT_FAILURE);
 
+            //     }
+
+            //     if(dup2(file_fd, targets[k]) < 0)
+            //     {
+            //         perror("Error: dup2 failed");
+            //         exit(EXIT_FAILURE);
+            //     }
+            //     close(file_fd);
+
+            // }
+
+            Command *cmd = &commands[i];
+
+            for (int r=0; r< cmd->redirection_count; r++) //pipe connection established. apply this cmds redirections in original order
+            {
+                Redirection *redirection = &cmd->redirections[r]; 
+
+                int fd = open(redirection->file, redirection->flags, 0644);
+
+                if (fd==-1) {
+                    perror(redirection->file);
+                    _exit(EXIT_FAILURE);
                 }
 
-                if(dup2(file_fd, targets[k]) < 0)
-                {
-                    perror("Error: dup2 failed");
-                    exit(EXIT_FAILURE);
+                if (dup2(fd,redirection->target) == -1) {
+                    perror("ERROR: redirection dup2 failed");
+                    close(fd);
+                    _exit(EXIT_FAILURE);
                 }
-                close(file_fd);
 
-            }
+                if (fd != redirection->target) {
+                    close(fd);
+                }
+            }            
 
             // Execute the child's commands
 
             execvp(commands[i].args[0],commands[i].args);
-            if(errno == 2) // the program does not exist
+            if(errno == ENOENT) // the program does not exist
             {
                 if(commandctr > 1)
                 {
-                    fprintf(stderr, "Error: Command nor found in the pipe sequence!\n");
+                    fprintf(stderr, "Error: Command not found in the pipe sequence!\n");
                 }
 
                 else {
@@ -162,9 +186,16 @@ void execute_commands(Command commands[], int commandctr)
 
     for (int i=0; i < forked; i++)
     { 
+        pid_t waited;
 
-        waitpid(pid[i],&status,0); //wait for a specific child by referring to the pid
+        do {
+            waited = waitpid(pid[i],&status,0); //wait for a specific child by referring to the pid
+        }
+        while (waited == -1 && errno==EINTR);
 
+        if (waited == -1) {
+            perror("ERROR: waitpid failed");
+        }
     }
 
     

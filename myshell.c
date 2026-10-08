@@ -16,10 +16,26 @@ int main(void)
         fflush(stdout);
 
         //fgets returns NULL on end of input; leaves the shell clean
-        if (fgets(line, sizeof(line), stdin)!=NULL)
+        if (fgets(line, sizeof(line), stdin)==NULL)
         {
             printf("\n");
             break;
+        }
+
+        if (strchr(line,'\n') == NULL && strlen(line) == sizeof(line)-1) { //if buffee full w/o newline, check if more chars belong to this line. dont allow oversized cmd
+            int ch=getchar();
+
+            if (ch != '\n' && ch != EOF) {
+                while (1) {
+                    ch = getchar();
+                    if (ch=='\n' || ch==EOF) {
+                        break; //else discard this char and read next one
+                    }
+                }
+
+                fprintf(stderr,"Error: Input line is too long.\n");
+                continue;
+            }
         }
             
         line[strcspn(line, "\n")] = '\0'; //strip trailing newline and replace with the null terminator
