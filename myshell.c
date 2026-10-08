@@ -13,6 +13,7 @@ typedef struct
     int counter; //number of arguments 
     char operator[4]; // >, >>, 2>, 2>>
     char *file; //filename used for redirection
+    char *infile; //input redirection
 } Command;
 
 int parse_command(char line[], Command *command)
@@ -21,6 +22,7 @@ int parse_command(char line[], Command *command)
     //initialize the command
     command->counter = 0;
     command -> file = NULL;
+    command->infile = NULL;
     command -> operator[0] = '\0';
 
     //scan line for output redirection operators 
@@ -95,6 +97,31 @@ int parse_command(char line[], Command *command)
 
         }
 
+        //found <
+        else if (line[i] == '<')
+        {
+            command->infile = &line[i+1];
+            line[i] = '\0';
+        }
+
+    }
+
+    if (command->infile != NULL) {
+        while (*command->infile == ' ' || *command->infile == '\t') {
+            command->infile++;
+        }
+        int inlength = (int)strlen(command->infile);
+
+        while (inlength>0 && (command->infile[inlength-1]==' ' || command->infile[inlength-1]=='\t')){
+            command->infile[inlength-1]='\0';
+            inlength--;
+        }
+
+        if(*command->infile == '\0')
+        {
+            fprintf(stderr,"Error: Input file not specified.\n");
+            return -1;
+        }        
     }
 
     //remove any potential spaces before filename 
@@ -105,14 +132,15 @@ int parse_command(char line[], Command *command)
         {
             command->file++;
         }
-    }
+    
 
-    //Redirection operator was found, but no filename was given
-    if(*command->file == '\0')
-    {
-        return -1;
+        //Redirection operator was found, but no filename was given
+        if(*command->file == '\0')
+        {
+            fprintf(stderr,"Error: Output file not specified.\n");
+            return -1;
+        }
     }
-
     
 
     // Tokenize commands
@@ -146,21 +174,30 @@ int parse_command(char line[], Command *command)
 
 }
 
-int find_pipes(char line[], Command commands[])
+int find_pipes(char line[], Command commands[], int *result)
 {
-    int *result;
+    //int *result;
     char* command_lines[size];
     int commandctr =1;
+
+    size_t length = strlen(line); //save len before replacing pipes with \0
 
     //first command starts at the beginning of the line
     command_lines[0] = line;
 
     //scan line for pipes 
 
-    for (int i=0; i < strlen(line); i++)
+    for (size_t i=0; i < length; i++)
     {
         if (line[i] == '|')
         {
+            if (commandctr >= size) //check capacity before adding segment
+            {
+                fprintf(stderr,"Error: Too many commands.\n");
+                *result = -1;
+                return commandctr;
+            }
+
             //found
             //command ends before the operator; replace the pipe with '\0'
             line[i] = '\0';
@@ -216,15 +253,17 @@ int main(int argc, char *argv[])
     while(1)
     {
         printf("$ ");
+        fflush(stdout); //flush prompt
 
         if (fgets(line, sizeof(line), stdin)!=NULL)
         {
             //int counter = 0;
             line[strcspn(line, "\n")] = '\0'; //strip trailing newline and replace with the null terminator
 
-            int commandctr = find_pipes(line,commands);
+            int result;
+            int commandctr = find_pipes(line,commands, &result);
 
-            int result = parse_command(line, Command*); //call the parse command function
+            //int result = parse_command(line, Command*); //call the parse command function
 
             if(result == 0)
             {
@@ -234,6 +273,11 @@ int main(int argc, char *argv[])
             else if (result == 1)
             {
                 break; //user entered exit as the command
+            }
+
+            else if (result == -1)
+            {
+                continue; //parsing function shouldve displayed the error
             }
 
 
@@ -247,12 +291,28 @@ int main(int argc, char *argv[])
 
             else if (pid == 0) //CHILD
             {
+                Command *cmd = &commands[0];
+
+                char *ops = cmd->operator;
+                char *file = cmd->file;
+                char **args = cmd->args;
+
                 int fd;
+
+                if (cmd->infile != NULL) {
+                    int fd = open(cmd->infile,O_RDONLY);
+                    if (fd<0) {
+                        fprintf(stderr,"Error: File not found.\n");
+                        exit(EXIT_FAILURE);
+                    }
+                    dup2(fd,STDIN_FILENO);
+                    close(fd);
+                }
 
                 if(strcmp(ops, ">") == 0)
                 {
 
-                    fd = = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    fd = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
                     if (fd < 0)
                     {
                         perror("ERROR: Could not open file");
@@ -267,7 +327,7 @@ int main(int argc, char *argv[])
 
                 else if(strcmp(ops, ">>") == 0)
                 {
-                    fd = = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                    fd = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
                     if (fd < 0)
                     {
                         perror("ERROR: Could not open file");
@@ -281,7 +341,7 @@ int main(int argc, char *argv[])
 
                 else if(strcmp(ops, "2>") == 0)
                 {
-                    fd = = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    fd = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
                     if (fd < 0)
                     {
                         perror("ERROR: Could not open file");
@@ -295,7 +355,7 @@ int main(int argc, char *argv[])
 
                 else if(strcmp(ops, "2>>") == 0)
                 {
-                    fd = = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                    fd = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
                     if (fd < 0)
                     {
                         perror("ERROR: Could not open file");
@@ -317,21 +377,25 @@ int main(int argc, char *argv[])
 
             else { //PARENT
 
-                int n; //numbe rof commands
-                int pipes = n-1;
+                // int n; //numbe rof commands
+                // int pipes = n-1;
 
-                int fd[2];
+                // int fd[2];
 
 
-                waitpid(pid,&status,0); //wait for a specific child by referring to the pid
-                if(WIFEXITED(status))
+                // waitpid(pid,&status,0); //wait for a specific child by referring to the pid
+                // if(WIFEXITED(status))
+                // {
+                //     printf(" Command not found\n");
+                // }
+
+                // else{
+                //     int fd[2];
+
+                // }
+                if (waitpid(pid,&status,0) == -1)
                 {
-                    printf(" Command not found\n");
-                }
-
-                else{
-                    int fd[2];
-
+                    perror("ERROR: waitpid failed"); //child reports exec failure through perror()
                 }
 
 
@@ -343,7 +407,7 @@ int main(int argc, char *argv[])
             break;
         }
         
-        printf(" \n "); //print new line so the new prompt starts on a separate line
+        //printf(" \n "); //print new line so the new prompt starts on a separate line //commented since we're flushing prompt
 
     }
     
