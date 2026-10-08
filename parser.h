@@ -24,7 +24,7 @@ int parse_command(char line[], Command *command);
 
 // The function splits the line when a pipe is found i.e. '|' and parses every piece itno commands[]
 // It syores the outcomes in *result and the returns the number of commands found as well
-int find_pipes(char line[], Command commands[]);
+int find_pipes(char line[], Command commands[], int *result);
 
 
 #endif

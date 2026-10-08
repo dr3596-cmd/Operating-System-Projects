@@ -19,7 +19,8 @@ int parse_command(char line[], Command *command)
 
     //scan line for output redirection operators 
 
-    for (int i=0; i< strlen(line); i++)
+    int len = strlen(line);
+    for (int i=0; i< len; i++)
     {
         //found >>
         if (line[i] == '>' && line[i+1]=='>')
@@ -189,7 +190,8 @@ int find_pipes(char line[], Command commands[], int *result)
 
     //scan line for pipes 
 
-    for (int i=0; i < strlen(line); i++)
+    int length = strlen(line);
+    for (int i=0; i < length; i++)
     {
         if (line[i] == '|')
         {

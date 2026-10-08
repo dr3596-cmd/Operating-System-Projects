@@ -16,7 +16,7 @@ parser.o: parser.c parser.h
 	$(CC) $(CFLAGS) -c parser.c
 
 executor.o: executor.c executor.h parser.h
-	$(CC) $(CFLAGS) -c parser.c
+	$(CC) $(CFLAGS) -c executor.c
 
 clean:
 	rm -f $(OBJS) myshell

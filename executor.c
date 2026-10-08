@@ -104,7 +104,7 @@ void execute_commands(Command commands[], int commandctr)
                 int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
             
 
-                int file_fd = OPEN(file[k], flags, 0644);
+                int file_fd = open(file[k], flags, 0644);
 
                 if(file_fd < 0)
                 {
@@ -120,19 +120,6 @@ void execute_commands(Command commands[], int commandctr)
                 }
                 close(file_fd);
 
-            }
-
-            else if(strcmp(commands[i].operator, ">>") == 0)
-            {
-                file_fd = = open (commands[i].file, O_WRONLY | O_CREAT | O_APPEND, 0644);
-                if (file_fd < 0)
-                {
-                    perror("ERROR: Could not open file");
-                    exit(EXIT_FAILURE);
-                }
-
-                dup2(file_fd, STDOUT_FILENO);
-                close(file_fd);
             }
 
             // Execute the child's commands

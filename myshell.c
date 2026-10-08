@@ -18,7 +18,7 @@ int main(void)
         //fgets returns NULL on end of input; leaves the shell clean
         if (fgets(line, sizeof(line), stdin)!=NULL)
         {
-            printf("\n")
+            printf("\n");
             break;
         }
             
@@ -38,7 +38,6 @@ int main(void)
 
         else if (result == -1)
         {
-            fprint("Error: Invalid Command Syntax");
             continue;
         }
 
