@@ -10,156 +10,363 @@
 
 typedef struct
 {
+    int target; //STDIN_FILENO,STDOUT_FILENO,STDERR_FILENO
+    int flags; //O_RDONLY, output creation/append flags
+    char *file;
+} Redirection;
+
+typedef struct
+{
     char *args[size]; //command and its arguments
     int counter; //number of arguments 
-    char operator[4]; // >, >>, 2>, 2>>
-    char *file; //filename used for redirection
-    char *infile; //input redirection
+    Redirection redirections[size];
+    int redirection_count;
+    // char operator[4]; // >, >>, 2>, 2>>
+    // char *file; //filename used for redirection
+    // char *infile; //input redirection
+    char text[size]; //store arg & filename strs
+    size_t text_used;
 } Command;
+
+enum TokenType
+{
+    TOKEN_END,
+    TOKEN_WORD,
+    TOKEN_INPUT,
+    TOKEN_OUTPUT,
+    TOKEN_APPEND,
+    TOKEN_ERROR,
+    TOKEN_ERROR_APPEND,
+    TOKEN_INVALID
+};
+
+static int next_token(const char **cursor, char word[size]) //read 1 token from pipe segment
+{
+    const char *p = *cursor;
+
+    while (*p==' ' || *p=='\t') {
+        p++;
+    }
+
+    if (*p=='\0') {
+        *cursor=p;
+        return TOKEN_END;
+    }
+
+    if (p[0]=='2' && p[1]=='>') { //2> operator
+        p+=2; //move pointer
+
+        if (*p=='>')  {
+            *cursor = p+1;
+            return TOKEN_ERROR_APPEND; //2>>
+        }
+        *cursor=p;
+        return TOKEN_ERROR;
+    }
+
+    if (*p=='<') {
+        *cursor = p+1;
+        return TOKEN_INPUT;
+    }
+
+    if (*p=='>')  {
+        p++;
+
+        if (*p=='>') {
+            *cursor = p+1;
+            return TOKEN_APPEND;
+        }
+
+        *cursor = p;
+        return TOKEN_OUTPUT;
+    }
+
+    size_t length = 0;
+
+    while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '<' && *p != '>') { //" " & \ etc not supported in this phase
+        if (*p == '\'' || *p == '"' || *p == '\\' || *p == '|') {
+            fprintf(stderr, "Error: Unsupported quoting, escape, or pipe syntax.\n");
+            return TOKEN_INVALID;
+        }
+
+        if (length >= size-1) {
+            fprintf(stderr, "Error: Token is too long.\n");
+            return TOKEN_INVALID;
+        }
+
+        word[length] = *p;
+        length++;
+        p++;
+    }
+
+    word[length] = '\0';
+    *cursor = p;
+    return TOKEN_WORD;
+}
+
+static char *store_word(Command *command, const char *word) //copy token into Command storage
+{
+    size_t bytes = strlen(word)+1;
+
+    if (bytes>sizeof(command->text) - command->text_used) {
+        fprintf(stderr, "Error: Command token storage exceeded.\n");
+        return NULL;
+    }
+
+    char *destination = &command->text[command->text_used];
+
+    memcpy(destination,word,bytes);
+    command->text_used += bytes;
+
+    return destination;
+}
+
 
 int parse_command(char line[], Command *command)
 {
 
     //initialize the command
     command->counter = 0;
-    command -> file = NULL;
-    command->infile = NULL;
-    command -> operator[0] = '\0';
+    command->redirection_count = 0;
+    command->text_used = 0;
+    command->args[0] = NULL;
+
+    const char *cursor = line;
+    char word[size];
 
     //scan line for output redirection operators 
 
-    for (int i=0; line[i]!= '\0'; i++)
+    while(1)
     {
-        //found >>
-        if (line[i] == '>' && line[i+1]=='>')
-        {
-            
-            command -> operator[0] = line[i];
-            command -> operator[1] = line[i+1];
-            command -> operator[2] = '\0';
+        int token = next_token(&cursor,word);
 
-            command -> file = &line[i+2];
-
-            //command ends before the operator
-            line[i] = '\0';
-
-            break;
-
-        }
-        
-        //found >
-        else if(line[i] == '>')
-        {
-            
-            command->operator[0] = line[i];
-            command->operator[1] = '\0';
-           
-            command->file = &line[i+1];
-
-            //command ends before the operator
-            line[i] = '\0';
-
+        if (token==TOKEN_END) {
             break;
         }
 
-
-        //found 2>>
-        else if (line[i] == '2' && line[i+1] == '>' && line[i+2] == '>')
-        {
-            
-            command->operator[0] = line[i];
-            command->operator[1] = line[i+1];
-            command->operator[2] = line[i+2];
-            command->operator[3] = '\0';
-
-            command->file = &line[i+3];
-
-            //command ends before the operator
-            line[i] = '\0';
-
-            break;
-
-        }
-        
-        //found 2>
-        else if(line[i] == '2' && line[i+1] == '>')
-        {
-            
-            command->operator[0] = line[i];
-            command->operator[1] = line[i+1];
-            command->operator[2] = '\0';
-
-            command->file = &line[i+2];
-
-            //command ends before the operator
-            line[i] = '\0';
-
-            break;
-
-        }
-
-        //found <
-        else if (line[i] == '<')
-        {
-            command->infile = &line[i+1];
-            line[i] = '\0';
-        }
-
-    }
-
-    if (command->infile != NULL) {
-        while (*command->infile == ' ' || *command->infile == '\t') {
-            command->infile++;
-        }
-        int inlength = (int)strlen(command->infile);
-
-        while (inlength>0 && (command->infile[inlength-1]==' ' || command->infile[inlength-1]=='\t')){
-            command->infile[inlength-1]='\0';
-            inlength--;
-        }
-
-        if(*command->infile == '\0')
-        {
-            fprintf(stderr,"Error: Input file not specified.\n");
+        if (token==TOKEN_INVALID) {
             return -1;
-        }        
-    }
-
-    //remove any potential spaces before filename 
-
-    if(command->file != NULL)
-    {
-        while(*command->file == ' ' || *command->file == '\t')
-        {
-            command->file++;
         }
-    
-        size_t filelength = strlen(command->file); //remove whitespace left before a pipe @end of this segment
-        while (filelength>0 && (command->file[filelength-1] == ' ' || command->file[filelength-1] == '\t')) {
-                command->file[filelength-1] = '\0';
-                filelength--;
+
+        if (token==TOKEN_WORD){ //normal cmd name / arg
+            if (command->counter >= size-1) {
+                fprintf(stderr,"Error: Too many arguments.\n");
+                return -1;
             }
 
+            char *argument = store_word(command,word);
 
-        //Redirection operator was found, but no filename was given
-        if(*command->file == '\0')
-        {
-            fprintf(stderr,"Error: Output file not specified.\n");
+            if (argument==NULL) {
+                return -1;
+            }
+
+            command->args[command->counter]=argument;
+            command->counter++;
+
+            continue;
+        }
+
+        int filename_token = next_token(&cursor,word); //redirection operator found == next token is filename
+        if (filename_token==TOKEN_INVALID)  {
             return -1;
         }
+
+        if (filename_token != TOKEN_WORD) {
+            if (token==TOKEN_INPUT) {
+                fprintf(stderr,"Error: Input file not specified.\n");
+            }
+            else if (token==TOKEN_ERROR || token==TOKEN_ERROR_APPEND) {
+                fprintf(stderr,"Error: Error output file not specified.\n");
+            }
+            else {
+                fprintf(stderr,"Error: Output file not specified.\n");
+            }
+
+            return -1;
+        }
+
+        if (command->redirection_count >= size) {
+            fprintf(stderr,"Error: Too many redirections.\n");
+            return -1;
+        }
+
+        char *filename = store_word(command,word);
+
+        if (filename==NULL) {
+            return -1;
+        }
+
+        Redirection *redirection = &command->redirections[command->redirection_count];
+
+        redirection->file = filename;
+
+        //found >>.
+        if (token==TOKEN_APPEND) {
+            redirection->target = STDOUT_FILENO;
+            redirection->flags = O_WRONLY | O_CREAT | O_APPEND;
+        }
+
+        //found >.
+        else if (token==TOKEN_OUTPUT) {
+            redirection->target = STDOUT_FILENO;
+            redirection->flags = O_WRONLY | O_CREAT | O_TRUNC;
+        }
+
+        //found 2>>.
+        else if (token==TOKEN_ERROR_APPEND)  {
+            redirection->target = STDERR_FILENO;
+            redirection->flags = O_WRONLY | O_CREAT | O_APPEND;
+        }
+
+        //found 2>.
+        else if (token==TOKEN_ERROR)  {
+            redirection->target = STDERR_FILENO;
+            redirection->flags = O_WRONLY | O_CREAT | O_TRUNC;
+        }
+
+        //found <.
+        else if (token == TOKEN_INPUT) {
+            redirection->target = STDIN_FILENO;
+            redirection->flags = O_RDONLY;
+        }
+
+        else {
+            fprintf(stderr,"Error: Invalid redirection operator.\n");
+            return -1;
+        }
+
+        command->redirection_count++;
     }
+    //     //found >>
+    //     if (line[i] == '>' && line[i+1]=='>')
+    //     {
+            
+    //         command -> operator[0] = line[i];
+    //         command -> operator[1] = line[i+1];
+    //         command -> operator[2] = '\0';
+
+    //         command -> file = &line[i+2];
+
+    //         //command ends before the operator
+    //         line[i] = '\0';
+
+    //         break;
+
+    //     }
+        
+    //     //found >
+    //     else if(line[i] == '>')
+    //     {
+            
+    //         command->operator[0] = line[i];
+    //         command->operator[1] = '\0';
+           
+    //         command->file = &line[i+1];
+
+    //         //command ends before the operator
+    //         line[i] = '\0';
+
+    //         break;
+    //     }
+
+
+    //     //found 2>>
+    //     else if (line[i] == '2' && line[i+1] == '>' && line[i+2] == '>')
+    //     {
+            
+    //         command->operator[0] = line[i];
+    //         command->operator[1] = line[i+1];
+    //         command->operator[2] = line[i+2];
+    //         command->operator[3] = '\0';
+
+    //         command->file = &line[i+3];
+
+    //         //command ends before the operator
+    //         line[i] = '\0';
+
+    //         break;
+
+    //     }
+        
+    //     //found 2>
+    //     else if(line[i] == '2' && line[i+1] == '>')
+    //     {
+            
+    //         command->operator[0] = line[i];
+    //         command->operator[1] = line[i+1];
+    //         command->operator[2] = '\0';
+
+    //         command->file = &line[i+2];
+
+    //         //command ends before the operator
+    //         line[i] = '\0';
+
+    //         break;
+
+    //     }
+
+    //     //found <
+    //     else if (line[i] == '<')
+    //     {
+    //         command->infile = &line[i+1];
+    //         line[i] = '\0';
+    //     }
+
+    // }
+
+    // if (command->infile != NULL) {
+    //     while (*command->infile == ' ' || *command->infile == '\t') {
+    //         command->infile++;
+    //     }
+    //     int inlength = (int)strlen(command->infile);
+
+    //     while (inlength>0 && (command->infile[inlength-1]==' ' || command->infile[inlength-1]=='\t')){
+    //         command->infile[inlength-1]='\0';
+    //         inlength--;
+    //     }
+
+    //     if(*command->infile == '\0')
+    //     {
+    //         fprintf(stderr,"Error: Input file not specified.\n");
+    //         return -1;
+    //     }        
+    // }
+
+    // //remove any potential spaces before filename 
+
+    // if(command->file != NULL)
+    // {
+    //     while(*command->file == ' ' || *command->file == '\t')
+    //     {
+    //         command->file++;
+    //     }
+    
+    //     size_t filelength = strlen(command->file); //remove whitespace left before a pipe @end of this segment
+    //     while (filelength>0 && (command->file[filelength-1] == ' ' || command->file[filelength-1] == '\t')) {
+    //             command->file[filelength-1] = '\0';
+    //             filelength--;
+    //         }
+
+
+    //     //Redirection operator was found, but no filename was given
+    //     if(*command->file == '\0')
+    //     {
+    //         fprintf(stderr,"Error: Output file not specified.\n");
+    //         return -1;
+    //     }
+    // }
     
 
-    // Tokenize commands
-    char *word = strtok(line, " \t"); //split lines on spaces or tabs
+    // // Tokenize commands
+    // char *word = strtok(line, " \t"); //split lines on spaces or tabs
 
-    while (word != NULL && command->counter < size-1)
-    {
-        command->args[command->counter] = word; // stores the pointer to commands
-        command->counter++;
+    // while (word != NULL && command->counter < size-1)
+    // {
+    //     command->args[command->counter] = word; // stores the pointer to commands
+    //     command->counter++;
 
-        word = strtok(NULL, " \t"); //split input by spaces or tabs
-    }
+    //     word = strtok(NULL, " \t"); //split input by spaces or tabs
+    // }
 
     command->args[command->counter] = NULL;
 
@@ -167,6 +374,10 @@ int parse_command(char line[], Command *command)
 
     if (command->counter == 0) 
     {
+        if (command->redirection_count > 0) { //redirection exist but no cmd name found --like "> output.txt"
+            fprintf(stderr,"Error: Command missing.\n");
+            return -1;
+        }
         return 0;
     }
 
@@ -257,7 +468,13 @@ int find_pipes(char line[], Command commands[], int *result)
         //Exit command
         else if (parse_result == 1)
         {
-            *result = 1;
+            if (commandctr>1) {
+                fprintf(stderr,"Error: exit is not supported inside a pipeline.\n");
+                *result = -1;
+            }
+            else {
+                *result=1;
+            }
             return commandctr;
         }
     }
@@ -363,71 +580,93 @@ int main(void)
 
                     Command *cmd = &commands[i];
 
-                    if (cmd->infile != NULL) //redirections after pipe connections. so file redirection can replace segment's pipe i/o
+                    for (int r=0; r< cmd->redirection_count; r++)
                     {
-                        int fd = open(cmd->infile,O_RDONLY);
+                        Redirection *redirection = &cmd->redirections[r];
+
+                        int fd = open(redirection->file, redirection->flags, 0644);
 
                         if (fd==-1) {
-                            perror(cmd->infile);
+                            perror(redirection->file);
                             _exit(EXIT_FAILURE);
                         }
 
-                        if (dup2(fd,STDIN_FILENO) == -1)  {
-                            perror("ERROR: input redirection dup2 failed");
+                        if (dup2(fd,redirection->target) == -1) {
+                            perror("ERROR: redirection dup2 failed");
                             close(fd);
                             _exit(EXIT_FAILURE);
                         }
 
-                        if (fd != STDIN_FILENO) {
-                            close(fd);
-                        }
-                    }
-
-                    if (cmd->file != NULL) {
-                        int flags;
-                        int target;
-
-                        if (strcmp(cmd->operator,">") == 0) {
-                            flags = O_WRONLY | O_CREAT | O_TRUNC;
-                            target = STDOUT_FILENO;
-                        }
-                        else if (strcmp(cmd->operator,">>") == 0) {
-                            flags = O_WRONLY | O_CREAT | O_APPEND;
-                            target = STDOUT_FILENO;
-                        }
-                        else if (strcmp(cmd->operator,"2>") == 0)  {
-                            flags = O_WRONLY | O_CREAT | O_TRUNC;
-                            target = STDERR_FILENO;
-                        }
-                        else if (strcmp(cmd->operator,"2>>") == 0)  {
-                            flags = O_WRONLY | O_CREAT | O_APPEND;
-                            target = STDERR_FILENO;
-                        }
-                        else {
-                            fprintf(stderr,"Error: Invalid redirection operator.\n");
-                            _exit(EXIT_FAILURE);
-                        }
-
-                        int fd = open(cmd->file,flags,0644);
-
-                        if (fd == -1)
-                        {
-                            perror(cmd->file);
-                            _exit(EXIT_FAILURE);
-                        }
-
-                        if (dup2(fd, target) == -1)
-                        {
-                            perror("ERROR: output/error redirection dup2 failed");
-                            close(fd);
-                            _exit(EXIT_FAILURE);
-                        }
-
-                        if (fd != target)
-                        {
+                        if (fd != redirection->target) {
                             close(fd);
                         }
                     }
+
+                    // if (cmd->infile != NULL) //redirections after pipe connections. so file redirection can replace segment's pipe i/o
+                    // {
+                    //     int fd = open(cmd->infile,O_RDONLY);
+
+                    //     if (fd==-1) {
+                    //         perror(cmd->infile);
+                    //         _exit(EXIT_FAILURE);
+                    //     }
+
+                    //     if (dup2(fd,STDIN_FILENO) == -1)  {
+                    //         perror("ERROR: input redirection dup2 failed");
+                    //         close(fd);
+                    //         _exit(EXIT_FAILURE);
+                    //     }
+
+                    //     if (fd != STDIN_FILENO) {
+                    //         close(fd);
+                    //     }
+                    // }
+
+                    // if (cmd->file != NULL) {
+                    //     int flags;
+                    //     int target;
+
+                    //     if (strcmp(cmd->operator,">") == 0) {
+                    //         flags = O_WRONLY | O_CREAT | O_TRUNC;
+                    //         target = STDOUT_FILENO;
+                    //     }
+                    //     else if (strcmp(cmd->operator,">>") == 0) {
+                    //         flags = O_WRONLY | O_CREAT | O_APPEND;
+                    //         target = STDOUT_FILENO;
+                    //     }
+                    //     else if (strcmp(cmd->operator,"2>") == 0)  {
+                    //         flags = O_WRONLY | O_CREAT | O_TRUNC;
+                    //         target = STDERR_FILENO;
+                    //     }
+                    //     else if (strcmp(cmd->operator,"2>>") == 0)  {
+                    //         flags = O_WRONLY | O_CREAT | O_APPEND;
+                    //         target = STDERR_FILENO;
+                    //     }
+                    //     else {
+                    //         fprintf(stderr,"Error: Invalid redirection operator.\n");
+                    //         _exit(EXIT_FAILURE);
+                    //     }
+
+                    //     int fd = open(cmd->file,flags,0644);
+
+                    //     if (fd == -1)
+                    //     {
+                    //         perror(cmd->file);
+                    //         _exit(EXIT_FAILURE);
+                    //     }
+
+                    //     if (dup2(fd, target) == -1)
+                    //     {
+                    //         perror("ERROR: output/error redirection dup2 failed");
+                    //         close(fd);
+                    //         _exit(EXIT_FAILURE);
+                    //     }
+
+                    //     if (fd != target)
+                    //     {
+                    //         close(fd);
+                    //     }
+                    // }
 
                     execvp(cmd->args[0], cmd->args); //for PATH cmds & explicit executable paths
 
