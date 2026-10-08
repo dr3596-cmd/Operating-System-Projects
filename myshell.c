@@ -5,6 +5,7 @@
 #include<sys/wait.h> // for wait(),...
 #include<string.h> //for strcspn(), strcmp(),...
 #include<fcntl.h> //for open, close 
+#include <errno.h> //errno, EINTR
 #define size 256
 
 typedef struct
@@ -133,6 +134,12 @@ int parse_command(char line[], Command *command)
             command->file++;
         }
     
+        size_t filelength = strlen(command->file); //remove whitespace left before a pipe @end of this segment
+        while (filelength>0 && (command->file[filelength-1] == ' ' || command->file[filelength-1] == '\t')) {
+                command->file[filelength-1] = '\0';
+                filelength--;
+            }
+
 
         //Redirection operator was found, but no filename was given
         if(*command->file == '\0')
@@ -213,6 +220,24 @@ int find_pipes(char line[], Command commands[], int *result)
 
     for(int i=0; i< commandctr ; i++)
     {
+        char *segment = command_lines[i];
+
+        while (*segment==' ' || *segment=='\t') { //allow blank line input
+            segment++;
+        }
+
+        if (*segment=='\0' && commandctr>1) { //blank segment in pipeline not allowed
+            if (i == commandctr-1) {
+                fprintf(stderr,"Error: Command missing after pipe.\n");
+            }
+            else {
+                fprintf(stderr,"Error: Empty command between pipes.\n");
+            }
+
+            *result = -1;
+            return commandctr;
+        }
+
         int parse_result = parse_command(command_lines[i], &commands[i]);
 
         //Error
@@ -244,11 +269,11 @@ int find_pipes(char line[], Command commands[], int *result)
 
 }
 
-int main(int argc, char *argv[])
+int main(void)
 {
     char line [size];
     Command commands[size];
-    int status;
+    //int status;
  
     while(1)
     {
@@ -280,126 +305,289 @@ int main(int argc, char *argv[])
                 continue; //parsing function shouldve displayed the error
             }
 
+            int num_pipes = commandctr-1;
+            int pipefd[size][2];
+            int pipes_created = 0;
+            int pipe_failed = 0;
 
-            pid_t pid = fork(); //fork inside the loop so that each command gets executed by a new child
+            for (int p=0; p<num_pipes; p++) { //create pipes before forking --children inherit fds
+                if (pipe(pipefd[p]) == -1) {
+                    perror("ERROR: pipe failed");
+                    pipe_failed=1;
+                    break;
+                }
 
-            if (pid < 0)
-            {
-                perror ("ERROR: fork failed");
+                pipes_created++;
+            }
+
+            if (pipe_failed) { //if pipe crreation failed, close only those created
+                for (int p=0; p<pipes_created; p++) {
+                    close(pipefd[p][0]);
+                    close(pipefd[p][1]);
+                }
+
                 continue;
             }
 
-            else if (pid == 0) //CHILD
-            {
-                Command *cmd = &commands[0];
+            pid_t pids[size];
+            int children_created=0;
 
-                char *ops = cmd->operator;
-                char *file = cmd->file;
-                char **args = cmd->args;
+            for (int i=0; i<commandctr; i++) {
+                pid_t pid = fork();
 
-                int fd;
-
-                if (cmd->infile != NULL) {
-                    int fd = open(cmd->infile,O_RDONLY);
-                    if (fd<0) {
-                        fprintf(stderr,"Error: File not found.\n");
-                        exit(EXIT_FAILURE);
-                    }
-                    dup2(fd,STDIN_FILENO);
-                    close(fd);
+                if (pid==-1) { //stop child creation. parent closes all pds after
+                    perror("ERROR: fork failed");
+                    break;
                 }
 
-                if(strcmp(ops, ">") == 0)
-                {
+                if (pid==0) { //CHILD   --every cmd except 1st reads from previous pipe
+                    if (i>0) {
+                        if (dup2(pipefd[i-1][0],STDIN_FILENO) == -1) {
+                            perror("ERROR: pipe input dup2 failed");
+                            _exit(EXIT_FAILURE);
+                        }
+                    }
 
-                    fd = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                    if (fd < 0)
+                    if (i < commandctr-1) { //every smd except last writes to next pipe
+                        if (dup2(pipefd[i][1],STDOUT_FILENO) == -1) {
+                            perror("ERROR: pipe output dup2 failed");
+                            _exit(EXIT_FAILURE);
+                        }
+                    }
+
+                    for (int p=0; p<num_pipes; p++) //st in/out holds the dups. close original pds in each child
                     {
-                        perror("ERROR: Could not open file");
-                        exit(EXIT_FAILURE);
-
+                        close(pipefd[p][0]);
+                        close(pipefd[p][1]);
                     }
 
-                    dup2(fd, STDOUT_FILENO);
-                    close(fd);
+                    Command *cmd = &commands[i];
 
-                }
-
-                else if(strcmp(ops, ">>") == 0)
-                {
-                    fd = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
-                    if (fd < 0)
+                    if (cmd->infile != NULL) //redirections after pipe connections. so file redirection can replace segment's pipe i/o
                     {
-                        perror("ERROR: Could not open file");
-                        exit(EXIT_FAILURE);
+                        int fd = open(cmd->infile,O_RDONLY);
 
+                        if (fd==-1) {
+                            perror(cmd->infile);
+                            _exit(EXIT_FAILURE);
+                        }
+
+                        if (dup2(fd,STDIN_FILENO) == -1)  {
+                            perror("ERROR: input redirection dup2 failed");
+                            close(fd);
+                            _exit(EXIT_FAILURE);
+                        }
+
+                        if (fd != STDIN_FILENO) {
+                            close(fd);
+                        }
                     }
 
-                    dup2(fd, STDOUT_FILENO);
-                    close(fd);
-                }
+                    if (cmd->file != NULL) {
+                        int flags;
+                        int target;
 
-                else if(strcmp(ops, "2>") == 0)
-                {
-                    fd = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                    if (fd < 0)
-                    {
-                        perror("ERROR: Could not open file");
-                        exit(EXIT_FAILURE);
+                        if (strcmp(cmd->operator,">") == 0) {
+                            flags = O_WRONLY | O_CREAT | O_TRUNC;
+                            target = STDOUT_FILENO;
+                        }
+                        else if (strcmp(cmd->operator,">>") == 0) {
+                            flags = O_WRONLY | O_CREAT | O_APPEND;
+                            target = STDOUT_FILENO;
+                        }
+                        else if (strcmp(cmd->operator,"2>") == 0)  {
+                            flags = O_WRONLY | O_CREAT | O_TRUNC;
+                            target = STDERR_FILENO;
+                        }
+                        else if (strcmp(cmd->operator,"2>>") == 0)  {
+                            flags = O_WRONLY | O_CREAT | O_APPEND;
+                            target = STDERR_FILENO;
+                        }
+                        else {
+                            fprintf(stderr,"Error: Invalid redirection operator.\n");
+                            _exit(EXIT_FAILURE);
+                        }
 
+                        int fd = open(cmd->file,flags,0644);
+
+                        if (fd == -1)
+                        {
+                            perror(cmd->file);
+                            _exit(EXIT_FAILURE);
+                        }
+
+                        if (dup2(fd, target) == -1)
+                        {
+                            perror("ERROR: output/error redirection dup2 failed");
+                            close(fd);
+                            _exit(EXIT_FAILURE);
+                        }
+
+                        if (fd != target)
+                        {
+                            close(fd);
+                        }
                     }
 
-                    dup2(fd, STDERR_FILENO);
-                    close(fd);
-                }
+                    execvp(cmd->args[0], cmd->args); //for PATH cmds & explicit executable paths
 
-                else if(strcmp(ops, "2>>") == 0)
-                {
-                    fd = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
-                    if (fd < 0)
-                    {
-                        perror("ERROR: Could not open file");
-                        exit(EXIT_FAILURE);
+                    if (errno==ENOENT) {//execvp() rets only if failed
+                        if (commandctr>1) {
+                            fprintf(stderr, "Error: Command not found in pipe sequence: %s\n", cmd->args[0]);
+                        }
+                        else {
+                            fprintf(stderr, "Error: Command not found: %s\n", cmd->args[0]);
+                        }
 
+                        _exit(127);
                     }
 
-                    dup2(fd, STDERR_FILENO);
-                    close(fd);
+                    perror(cmd->args[0]);
+                    _exit(126);
                 }
 
-                execvp(args[0],args);
-
-                perror("command failed");
-
-                exit(EXIT_FAILURE);
-
+                pids[children_created] = pid; //PARENT --store only successfully created child pids
+                children_created++;
             }
 
-            else { //PARENT
-
-                // int n; //numbe rof commands
-                // int pipes = n-1;
-
-                // int fd[2];
-
-
-                // waitpid(pid,&status,0); //wait for a specific child by referring to the pid
-                // if(WIFEXITED(status))
-                // {
-                //     printf(" Command not found\n");
-                // }
-
-                // else{
-                //     int fd[2];
-
-                // }
-                if (waitpid(pid,&status,0) == -1)
-                {
-                    perror("ERROR: waitpid failed"); //child reports exec failure through perror()
-                }
-
-
+            for (int p=0; p<num_pipes; p++) { //parent doesnt r/w pipeline data 
+                close(pipefd[p][0]);
+                close(pipefd[p][1]);
             }
+
+            for (int i=0; i<children_created; i++) { //create all children before waiting --wait only for actually stored pids
+                int status;
+                pid_t waited;
+
+                do {
+                    waited = waitpid(pids[i],&status,0);
+                }
+                while (waited == -1 && errno==EINTR);
+
+                if (waited == -1) {
+                    perror("ERROR: waitpid failed");
+                }
+            }
+
+            // pid_t pid = fork(); //fork inside the loop so that each command gets executed by a new child
+
+            // if (pid < 0)
+            // {
+            //     perror ("ERROR: fork failed");
+            //     continue;
+            // }
+
+            // else if (pid == 0) //CHILD
+            // {
+            //     Command *cmd = &commands[0];
+
+            //     char *ops = cmd->operator;
+            //     char *file = cmd->file;
+            //     char **args = cmd->args;
+
+            //     int fd;
+
+            //     if (cmd->infile != NULL) {
+            //         int fd = open(cmd->infile,O_RDONLY);
+            //         if (fd<0) {
+            //             fprintf(stderr,"Error: File not found.\n");
+            //             exit(EXIT_FAILURE);
+            //         }
+            //         dup2(fd,STDIN_FILENO);
+            //         close(fd);
+            //     }
+
+            //     if(strcmp(ops, ">") == 0)
+            //     {
+
+            //         fd = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            //         if (fd < 0)
+            //         {
+            //             perror("ERROR: Could not open file");
+            //             exit(EXIT_FAILURE);
+
+            //         }
+
+            //         dup2(fd, STDOUT_FILENO);
+            //         close(fd);
+
+            //     }
+
+            //     else if(strcmp(ops, ">>") == 0)
+            //     {
+            //         fd = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            //         if (fd < 0)
+            //         {
+            //             perror("ERROR: Could not open file");
+            //             exit(EXIT_FAILURE);
+
+            //         }
+
+            //         dup2(fd, STDOUT_FILENO);
+            //         close(fd);
+            //     }
+
+            //     else if(strcmp(ops, "2>") == 0)
+            //     {
+            //         fd = open (file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            //         if (fd < 0)
+            //         {
+            //             perror("ERROR: Could not open file");
+            //             exit(EXIT_FAILURE);
+
+            //         }
+
+            //         dup2(fd, STDERR_FILENO);
+            //         close(fd);
+            //     }
+
+            //     else if(strcmp(ops, "2>>") == 0)
+            //     {
+            //         fd = open (file, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            //         if (fd < 0)
+            //         {
+            //             perror("ERROR: Could not open file");
+            //             exit(EXIT_FAILURE);
+
+            //         }
+
+            //         dup2(fd, STDERR_FILENO);
+            //         close(fd);
+            //     }
+
+            //     execvp(args[0],args);
+
+            //     perror("command failed");
+
+            //     exit(EXIT_FAILURE);
+
+            // }
+
+            // else { //PARENT
+
+            //     // int n; //numbe rof commands
+            //     // int pipes = n-1;
+
+            //     // int fd[2];
+
+
+            //     // waitpid(pid,&status,0); //wait for a specific child by referring to the pid
+            //     // if(WIFEXITED(status))
+            //     // {
+            //     //     printf(" Command not found\n");
+            //     // }
+
+            //     // else{
+            //     //     int fd[2];
+
+            //     // }
+            //     if (waitpid(pid,&status,0) == -1)
+            //     {
+            //         perror("ERROR: waitpid failed"); //child reports exec failure through perror()
+            //     }
+
+
+            // }
 
         }
         else 
