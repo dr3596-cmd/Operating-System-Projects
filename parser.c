@@ -61,20 +61,50 @@ static int next_token(const char **cursor, char word[MAX_SIZE]) //read 1 token f
 
     size_t length = 0;
 
-    while (*p != '\0' && *p != ' ' && *p != '\t' && *p != '<' && *p != '>') { //extract word until whitespace/redir operator/end of segment
-        if (*p == '\'' || *p == '"' || *p == '\\' || *p == '|') { //this phase doesnt support these
-            fprintf(stderr, "Error: Unsupported quoting, escape, or pipe syntax.\n");
+    char quote = '\0';
+
+    while (*p != '\0') {
+        if (quote=='\0') { //unquoted separators terminate the current word
+            if (*p == ' ' || *p == '\t' || *p == '<' || *p == '>') {
+                break;
+            }
+
+            if (*p == '|') {
+                fprintf(stderr,"Error: Unexpected pipe in command segment.\n");
+                return TOKEN_INVALID;
+            }
+
+            if (*p == '\'' || *p == '"') { //start quoted section w/o copying its delimiter
+                quote = *p;
+                p++;
+                continue;
+            }
+        }
+        else if (*p == quote) { //end current quoted section, omit closing delimiter
+            quote = '\0';
+            p++;
+            continue;
+        }
+
+        if (*p == '\\' && quote != '\'') { //backslash is literal inside single quotes
+            fprintf(stderr,"Error: Backslash escaping is not supported.\n");
             return TOKEN_INVALID;
         }
 
-        if (length >= MAX_SIZE-1) { //final array pos for null terminator
-            fprintf(stderr, "Error: Token is too long.\n");
+        if (length>=MAX_SIZE-1) {
+            fprintf(stderr,"Error: Token is too long.\n");
             return TOKEN_INVALID;
         }
 
-        word[length] = *p; 
+        word[length] = *p;
         length++;
         p++;
+    }
+
+    if (quote != '\0')
+    {
+        fprintf(stderr, "Error: Unmatched quote.\n");
+        return TOKEN_INVALID;
     }
 
     word[length] = '\0'; //valid string. record where tokenization should resume
@@ -405,10 +435,40 @@ int find_pipes(char line[], Command commands[], int *result)
 
     //scan line for pipes 
 
-    int length = strlen(line);
-    for (int i=0; i < length; i++)
+    size_t length = strlen(line);
+    char quote = '\0';
+
+    for (size_t i=0; i < length; i++)
     {
-        if (line[i] == '|')
+        char current = line[i];
+        if (quote != '\0')
+        {
+            if (current == quote)
+            {
+                quote = '\0';
+            }
+            else if (current == '\\' && quote != '\'') {
+                fprintf(stderr, "Error: Backslash escaping is not supported.\n");
+                *result = -1;
+                return commandctr;
+            }
+            continue; //everything else inside quotes, including '|', is literal
+        }
+
+        if (current == '\'' || current == '"')
+        {
+            quote = current;
+            continue;
+        }
+
+        if (current == '\\')
+        {
+            fprintf(stderr, "Error: Backslash escaping is not supported.\n");
+            *result = -1;
+            return commandctr;
+        }
+
+        if (current == '|')
         {
             if(commandctr >= MAX_SIZE -1)
             {
