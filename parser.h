@@ -22,22 +22,9 @@ typedef struct //command segment
     int counter; //number of arguments 
     Redirection redirections[MAX_SIZE];
     int redirection_count;
-    // char operator[4]; // >, >>, 2>, 2>>
-    // char *file; //filename used for redirection
-    // char *infile; //input redirection
     char text[MAX_SIZE]; //store arg & filename strs
     size_t text_used;
 } Command;
-
-// typedef struct
-// {
-//     char *args[MAX_SIZE]; //command and its arguments
-//     int counter; //number of arguments 
-//     char operator[4]; // >, >> (standard output redirection)
-//     char *file; // filename used by operators
-//     char err_op[4]; // 2>, 2>> (standard error redirection)
-//     char *err_file; //filename used by an error operator
-// } Command;
 
 
 // The function parses one command (the text between pipes) into *command

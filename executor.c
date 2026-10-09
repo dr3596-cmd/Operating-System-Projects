@@ -86,41 +86,6 @@ void execute_commands(Command commands[], int commandctr)
                 close(fd[j][1]);
             }
 
-            // REDIRECTION
-
-            // char *operators[2] = {commands[i].operator, commands[i].err_op};
-            // char *file[2] = {commands[i].file, commands[i].err_file};
-            // int targets[2] = {STDOUT_FILENO, STDERR_FILENO};
-
-            // for (int k=0; k<2; k++)
-            // {
-            //     if(operators[k][0] == '\0')
-            //     {
-            //         continue; // the stream is not redirected
-            //     }
-
-            //     int append = (strcmp(operators[k], ">>") == 0 || strcmp(operators[k], "2>>")==0);
-
-            //     int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
-            
-
-            //     int file_fd = open(file[k], flags, 0644);
-
-            //     if(file_fd < 0)
-            //     {
-            //         perror(file[k]);
-            //         exit(EXIT_FAILURE);
-
-            //     }
-
-            //     if(dup2(file_fd, targets[k]) < 0)
-            //     {
-            //         perror("Error: dup2 failed");
-            //         exit(EXIT_FAILURE);
-            //     }
-            //     close(file_fd);
-
-            // }
 
             Command *cmd = &commands[i];
 
