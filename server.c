@@ -27,8 +27,6 @@ int main(void) //currently 1 TCP connection & observes incoming data
         return EXIT_FAILURE;
     }
 
-    printf("Server: socket CREATION success.\n");
-
     int reuse = 1; //can reuse local addr during repeated tests (but no 2nd listener on same endpoint)
 
     if (setsockopt(server_socket,SOL_SOCKET,SO_REUSEADDR, &reuse, sizeof(reuse))==-1) {
@@ -48,8 +46,6 @@ int main(void) //currently 1 TCP connection & observes incoming data
         return EXIT_FAILURE;
     }
 
-    printf("Server: socket BIND success.\n");
-
 
     if (listen(server_socket, 1) == -1) {
         perror("Server: listen failed");
@@ -57,7 +53,7 @@ int main(void) //currently 1 TCP connection & observes incoming data
         return EXIT_FAILURE;
     }
 
-    printf("Server: socket LISTEN success on 127.0.0.1:%d.\n", PORT); //listen success. socket is a listening socket
+    printf("[INFO] Server started, waiting for client connections...\n"); //listen success. socket is a listening socket
     fflush(stdout);
 
     struct sockaddr_in client_address;
@@ -76,27 +72,26 @@ int main(void) //currently 1 TCP connection & observes incoming data
         return EXIT_FAILURE;
     }
 
-    printf("Server: socket ACCEPT success.\n");
+    // char client_ip[INET_ADDRSTRLEN];
 
-    char client_ip[INET_ADDRSTRLEN];
-
-    if (inet_ntop(AF_INET, &client_address.sin_addr,client_ip, sizeof(client_ip))!=NULL) {
-        printf("Server: client connected from %s:%u.\n", client_ip, (unsigned int)ntohs(client_address.sin_port));
-    }
+    // if (inet_ntop(AF_INET, &client_address.sin_addr,client_ip, sizeof(client_ip))!=NULL) {
+    //     printf("Server: client connected from %s:%u.\n", client_ip, (unsigned int)ntohs(client_address.sin_port));
+    // }
+    printf("[INFO] Client connected.\n");
 
     close(server_socket); //close listening socket cuz only 1 client sesh required
     fflush(stdout);
 
     char command[MAX_SIZE];
     int server_status=EXIT_SUCCESS;
-    unsigned long command_number=0;
+    //unsigned long command_number=0;
 
     while (1)
     {
         int received = receive_command(client_socket, command, sizeof(command)); //receive compelte cmd
 
         if (received==0) {
-            printf("Server: client disconnected.\n");
+            printf("[INFO] Client disconnected.\n");
             break;
         }
         if (received==-1) { //end sesh after failure
@@ -105,8 +100,9 @@ int main(void) //currently 1 TCP connection & observes incoming data
             break;
         }
 
-        command_number++;
-        printf("Server: RECEIVED command %lu: %s\n", command_number, command);
+        //command_number++;
+        printf("[RECEIVED] Received command: \"%s\" from client.\n", command);
+        printf("[EXECUTING] Executing command: \"%s\"\n", command);
         fflush(stdout);
 
         int result = execute_remote_command(command, client_socket);
@@ -117,7 +113,7 @@ int main(void) //currently 1 TCP connection & observes incoming data
             break;
         }
         if (result==1){
-            printf("Server: exit requested; ending session.\n");
+            printf("[INFO] Exit command received; shutting down.\n");
             break;
         }
 
@@ -127,7 +123,6 @@ int main(void) //currently 1 TCP connection & observes incoming data
             break;
         }
 
-        printf("Server: command %lu COMPLETE.\n", command_number);
         fflush(stdout);
     }
 

@@ -120,6 +120,34 @@ static void run_command_worker(const char *command, int capture_read, int captur
     finish_worker(WORKER_COMPLETE);
 }
 
+static void log_output_chunk(const char *command, const char *buffer, size_t count, int *started, int *error_mode) //detects err by looking for Phase 1's msg text
+{
+    if (!*started) {
+        *started = 1;
+
+        if (strstr(buffer, "Command not found") != NULL) { //Phase 1 prints "Error: Command not found!" for ENOENT
+            *error_mode = 1;
+
+            while (count>0 && buffer[count-1] == '\n') { //remove trailing newlines
+                count--;
+            }
+
+            printf("[ERROR] Command not found: \"%s\"\n", command);
+            printf("[OUTPUT] Sending error message to client: \"");
+            fwrite(buffer,1,count,stdout);
+            printf("\"\n");
+            fflush(stdout);
+            return;
+        }
+
+        printf("[OUTPUT] Sending output to client:\n");
+    }
+
+    fwrite(buffer, 1, count, stdout); //normal output is printed exactly as the cmd produced it
+    fflush(stdout);
+}
+
+
 int execute_remote_command(const char *command, int client_socket)
 {
     if (command==NULL || client_socket<=STDERR_FILENO) {
@@ -159,16 +187,22 @@ int execute_remote_command(const char *command, int client_socket)
 
     close(capture_pipe[1]); //parent: read only
 
-    char buffer[4096];
+    char buffer[4096+1]; //+1 so each chunk can be null-terminated for strstr()
+    int output_started = 0; //has the [OUTPUT] header been logged?
+    int error_mode = 0; //was the output a "Command not found" error?
+    char last_character = '\n';
     int saved_error = 0;
 
 
     while (1) //drain output while worker runs
     {
-        ssize_t bytes_read = read(capture_pipe[0], buffer, sizeof(buffer));
+        ssize_t bytes_read = read(capture_pipe[0], buffer, sizeof(buffer)-1);
 
         if (bytes_read>0) {
             if (saved_error==0) {
+                buffer[bytes_read] = '\0';
+                log_output_chunk(command, buffer, (size_t)bytes_read, &output_started, &error_mode);
+                last_character = buffer[bytes_read-1];
                 if (send_command_output(client_socket, buffer, (size_t)bytes_read)== -1) {
                     if (errno!=0) {
                         saved_error=errno;
@@ -195,6 +229,14 @@ int execute_remote_command(const char *command, int client_socket)
     }
 
     close(capture_pipe[0]);
+
+    if (output_started && !error_mode) { //add blank line after cmd's normal output (Fig 1)
+        if (last_character != '\n') {
+            printf("\n"); //finish an unterminated last line first
+        }
+        printf("\n");
+        fflush(stdout);
+    }
 
     int worker_status; //collect worker status, no zombies
     pid_t waited;
