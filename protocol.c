@@ -3,6 +3,7 @@
 #include <stdint.h> //uint32_t
 #include <arpa/inet.h> //htonl
 #include "protocol.h"
+#include <errno.h> //errno, EINTR, EINVAL, EPROTO, EMSGSIZE
 
 
 //function to send all bytes of the command to the server
@@ -32,7 +33,7 @@ int recv_all(int socket_fd, void *buffer, size_t length)
 	size_t total_received = 0;
 	while(total_received < length)
 	{
-		size_t bytes_received = recv(socket_fd , (char*)buffer + total_received , length - total_received,0);
+		ssize_t bytes_received = recv(socket_fd , (char*)buffer + total_received , length - total_received,0); //ssize_t since recv rets -1 on error
 
 		if(bytes_received < 0){
 			return -1; //if sending fails
@@ -73,4 +74,60 @@ int send_marker (int socket_fd)
 {
     uint32_t zero = htonl(0);
     return (send_command(socket_fd, (const char*)&zero, sizeof(zero)) == -1)?-1:0; 
+}
+
+
+int receive_command(int socket_fd, char *buffer, size_t capacity) //receive 1 cmd using clients newline delimiter
+{
+    if (buffer==NULL || capacity==0) {//dest buffer must have @least room for \0
+        errno=EINVAL;
+        return -1;
+    }
+
+    size_t used = 0;
+
+    buffer[0] = '\0'; //start w empty local str
+
+    while (1)
+    {
+        char character;
+
+        ssize_t received = recv(socket_fd, &character,1,0); //recv rets signed count. request 1B from cmd stream
+
+        if (received == -1) {
+            if (errno==EINTR) {
+                continue; //recv interrupted by signal, retry
+            }
+
+			return -1; //preserve socket error for caller's perror()
+        }
+
+        if (received==0) {
+            if (used==0) {
+                return 0; //normal disconnect between cmds
+            }
+
+            errno=EPROTO; //some cmd bytes arrived but not final newline. dont execute incomplete cmd
+            return -1;
+        }
+
+        if (character == '\n') {
+            buffer[used] = '\0'; //complete cmd -> replace wire delimter with \0
+            return 1;
+        }
+
+        if (character == '\0') {//embedded null bytes are invalid
+            errno=EPROTO;
+            return -1;
+        }
+
+        if (used >= capacity-1) { //reserve last buffer pos for terminating \0
+            errno=EMSGSIZE;
+            return -1;
+        }
+
+        buffer[used]=character; //store next cmd byte & maintain a valid local string
+        used++;
+        buffer[used] = '\0';
+    }
 }

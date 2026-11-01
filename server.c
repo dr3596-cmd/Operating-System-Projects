@@ -5,11 +5,21 @@
 #include <stdlib.h> //EXIT_SUCCESS, EXIT_FAILURE
 #include <sys/socket.h> //socket(), bind(), listen(), accept(), recv()
 #include <unistd.h> //close()
+#include <signal.h> //SIGPIPE handling
 
-#define PORT 9002
+#include "parser.h"
+#include "protocol.h"
+#include "remote_executor.h"
+
+//#define PORT 9002
 
 int main(void) //currently 1 TCP connection & observes incoming data
 {
+    if (signal(SIGPIPE,SIG_IGN)==SIG_ERR) { //disconnected client => send() reports error
+        perror("Server: SIGPIPE setup failed");
+        return EXIT_FAILURE;
+    }
+
     int server_socket = socket(AF_INET, SOCK_STREAM, 0); //create ipv4 TCP socket --returned descriptor is initially unbound
 
     if (server_socket == -1) {
@@ -77,30 +87,48 @@ int main(void) //currently 1 TCP connection & observes incoming data
     close(server_socket); //close listening socket cuz only 1 client sesh required
     fflush(stdout);
 
-    char buffer[1024];
+    char command[MAX_SIZE];
     int server_status=EXIT_SUCCESS;
+    unsigned long command_number=0;
 
     while (1)
     {
-        ssize_t received = recv(client_socket,buffer,sizeof(buffer),0); // 1 recv result != 1 complete cmd
+        int received = receive_command(client_socket, command, sizeof(command)); //receive compelte cmd
 
-        if (received>0) {
-            printf("Server: RECEIVED %zd bytes.\n",received);
-            fflush(stdout);
-        }
-        else if (received==0) {
-            printf("Server: client disconnected.\n"); //peer has closed its sending side 
+        if (received==0) {
+            printf("Server: client disconnected.\n");
             break;
         }
-        else {
-            if (errno==EINTR) {
-                continue; //retry a receive interrupted by a signal
-            }
-
-            perror("Server: recv failed");
-            server_status=EXIT_FAILURE;
+        if (received==-1) { //end sesh after failure
+            perror("Server: command reception failed");
+            server_status = EXIT_FAILURE;
             break;
         }
+
+        command_number++;
+        printf("Server: RECEIVED command %lu: %s\n", command_number, command);
+        fflush(stdout);
+
+        int result = execute_remote_command(command, client_socket);
+
+        if (result==-1) {
+            perror("Server: execution or output transfer failed");
+            server_status = EXIT_FAILURE;
+            break;
+        }
+        if (result==1){
+            printf("Server: exit requested; ending session.\n");
+            break;
+        }
+
+        if (send_marker(client_socket) == -1) { //all output has been forwarded.
+            perror("Server: completion send failed");
+            server_status = EXIT_FAILURE;
+            break;
+        }
+
+        printf("Server: command %lu COMPLETE.\n", command_number);
+        fflush(stdout);
     }
 
     close(client_socket); //release connected socket before terminating server

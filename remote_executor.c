@@ -6,10 +6,12 @@
 #include <sys/types.h> //pid_t, ssize_t
 #include <sys/wait.h> //waitpid(), child-status macros
 #include <unistd.h> //pipe(), fork(), dup2(), read(), close(), _exit()
+#include <signal.h> //signal(), SIGPIPE, SIG_DFL
 
 #include "parser.h"
 #include "executor.h"
 #include "remote_executor.h"
+#include "protocol.h"
 
 //worker's outcomes
 #define WORKER_COMPLETE 0
@@ -17,18 +19,22 @@
 #define WORKER_FAILED 20
 
 
-static int display_command_output(const char *buffer, size_t byte_count) { //output handling
-    if (fwrite(buffer, 1, byte_count, stdout) != byte_count) { //capture output in bytes
-        errno=EIO;
-        return -1;
-    }
+// static int display_command_output(const char *buffer, size_t byte_count) { //output handling
+//     if (fwrite(buffer, 1, byte_count, stdout) != byte_count) { //capture output in bytes
+//         errno=EIO;
+//         return -1;
+//     }
 
-    if (fflush(stdout)==EOF) //show output immediately
-    {
-        return -1;
-    }
+//     if (fflush(stdout)==EOF) //show output immediately
+//     {
+//         return -1;
+//     }
 
-    return 0;
+//     return 0;
+// }
+
+static int send_command_output(int client_socket, const char *buffer, size_t byte_count) { //send 1 chunk of captured stdout/stderr to client
+    return send_chunk(client_socket, buffer, byte_count);
 }
 
 static void finish_worker(int exit_code) //finish worker w/o running inherited parent exit handlers
@@ -44,8 +50,9 @@ static void finish_worker(int exit_code) //finish worker w/o running inherited p
     _exit(exit_code); //doesnt flush stdio, so we flush before
 }
 
-static void run_command_worker(const char *command, int capture_read, int capture_write) { //run parsing & execution in worker. called after fork() in child
+static void run_command_worker(const char *command, int capture_read, int capture_write, int client_socket) { //run parsing & execution in worker. called after fork() in child
     close(capture_read); //worker writes captured output, doesnt read the pipe
+    close(client_socket); //only supervising process sends responses
 
     if (dup2(capture_write, STDOUT_FILENO)==-1) { //connect normal command output to the capture pipe
         perror("Worker: stdout redirection failed");
@@ -58,6 +65,11 @@ static void run_command_worker(const char *command, int capture_read, int captur
     }
 
     close(capture_write); //stdout & stderr now refer to the pipe, so original closed
+
+    if (signal(SIGPIPE,SIG_DFL)==SIG_ERR) { //supervising server ignores SIGPIPE for socket writes
+        perror("Worker: SIGPIPE reset failed");
+        finish_worker(WORKER_FAILED);
+    }
 
     int input_fd = open("/dev/null", O_RDONLY); //cannot let commands read from the server operator's terminal. /dev/null =>immediate EOF
 
@@ -108,9 +120,9 @@ static void run_command_worker(const char *command, int capture_read, int captur
     finish_worker(WORKER_COMPLETE);
 }
 
-int execute_remote_command(const char *command)
+int execute_remote_command(const char *command, int client_socket)
 {
-    if (command==NULL) {
+    if (command==NULL || client_socket<=STDERR_FILENO) {
         errno=EINVAL;
         return -1;
     }
@@ -141,7 +153,7 @@ int execute_remote_command(const char *command)
     }
 
     if (worker_pid==0) {
-        run_command_worker(command, capture_pipe[0], capture_pipe[1]); //child: parse and execute with redirected output
+        run_command_worker(command, capture_pipe[0], capture_pipe[1], client_socket); //child: parse and execute with redirected output
         _exit(WORKER_FAILED); //worker func shouldnt return
     }
 
@@ -157,7 +169,7 @@ int execute_remote_command(const char *command)
 
         if (bytes_read>0) {
             if (saved_error==0) {
-                if (display_command_output(buffer, (size_t)bytes_read)== -1) {
+                if (send_command_output(client_socket, buffer, (size_t)bytes_read)== -1) {
                     if (errno!=0) {
                         saved_error=errno;
                     } else {

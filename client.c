@@ -18,13 +18,13 @@
 the server answers with chunks of output, each one equivalent to 4-bytes in length + any remaining
 then the server ends the answer with a length of 0, so the lcient knows the command is successfully finished*/
 
-int main(int argc, char* argv[])
+int main(void)
 {
 
 	char line[MAX_SIZE]; //the command types by the user 
 	char server_response[MAX_SIZE]; //holds a piece of the server's output at a time
 	const char *ip = default_ip; // server address
-	int port = PORT; //port required for communication
+	//int port = PORT; //port required for communication
 
 
 
@@ -154,14 +154,14 @@ int main(int argc, char* argv[])
 		//shuts down. Only "exit" alone counts a command to terminate the programs, other variations are cosnidered as 
 		//normal commands
 		
-		char word1[MAX_SIZE];
-		char word2[MAX_SIZE];
-		int word_count = sscanf(line, "%255s %255s", word1, word2);
+		// char word1[MAX_SIZE];
+		// char word2[MAX_SIZE];
+		// int word_count = sscanf(line, "%255s %255s", word1, word2);
 
-		if(word_count == 1 && strcmp(word1, "exist")==0)
-		{
-			break; //the client disconnects
-		}
+		// if(word_count == 1 && strcmp(word1, "exist")==0)
+		// {
+		// 	break; //the client disconnects
+		// }
 
 		//Receive the server's response; a length of 0 means the command results have been 
 		//completely sent from the server. A response arrives in chuncls 
