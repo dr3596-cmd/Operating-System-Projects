@@ -11,9 +11,8 @@
 #include "protocol.h"
 #include "remote_executor.h"
 
-//#define PORT 9002
 
-int main(void) //currently 1 TCP connection & observes incoming data
+int main(void) //single-client server: receives cmds, runs them with Phase 1, returns output
 {
     if (signal(SIGPIPE,SIG_IGN)==SIG_ERR) { //disconnected client => send() reports error
         perror("Server: SIGPIPE setup failed");
@@ -72,11 +71,6 @@ int main(void) //currently 1 TCP connection & observes incoming data
         return EXIT_FAILURE;
     }
 
-    // char client_ip[INET_ADDRSTRLEN];
-
-    // if (inet_ntop(AF_INET, &client_address.sin_addr,client_ip, sizeof(client_ip))!=NULL) {
-    //     printf("Server: client connected from %s:%u.\n", client_ip, (unsigned int)ntohs(client_address.sin_port));
-    // }
     printf("[INFO] Client connected.\n");
 
     close(server_socket); //close listening socket cuz only 1 client sesh required
@@ -84,7 +78,6 @@ int main(void) //currently 1 TCP connection & observes incoming data
 
     char command[MAX_SIZE];
     int server_status=EXIT_SUCCESS;
-    //unsigned long command_number=0;
 
     while (1)
     {
@@ -100,7 +93,6 @@ int main(void) //currently 1 TCP connection & observes incoming data
             break;
         }
 
-        //command_number++;
         printf("[RECEIVED] Received command: \"%s\" from client.\n", command);
         printf("[EXECUTING] Executing command: \"%s\"\n", command);
         fflush(stdout);
@@ -113,7 +105,7 @@ int main(void) //currently 1 TCP connection & observes incoming data
             break;
         }
         if (result==1){
-            printf("[INFO] Exit command received; shutting down.\n");
+            printf("[INFO] Exit command received from the client.\n");
             break;
         }
 
@@ -127,7 +119,7 @@ int main(void) //currently 1 TCP connection & observes incoming data
     }
 
     close(client_socket); //release connected socket before terminating server
-    printf("Server: shutting down.\n");
+    printf("[INFO] Server shutting down.\n");
 
     return server_status;
 }

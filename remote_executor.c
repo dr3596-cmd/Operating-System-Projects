@@ -19,20 +19,6 @@
 #define WORKER_FAILED 20
 
 
-// static int display_command_output(const char *buffer, size_t byte_count) { //output handling
-//     if (fwrite(buffer, 1, byte_count, stdout) != byte_count) { //capture output in bytes
-//         errno=EIO;
-//         return -1;
-//     }
-
-//     if (fflush(stdout)==EOF) //show output immediately
-//     {
-//         return -1;
-//     }
-
-//     return 0;
-// }
-
 static int send_command_output(int client_socket, const char *buffer, size_t byte_count) { //send 1 chunk of captured stdout/stderr to client
     return send_chunk(client_socket, buffer, byte_count);
 }
