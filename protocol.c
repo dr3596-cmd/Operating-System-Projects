@@ -13,13 +13,21 @@ int send_command(int socket_fd, const char *data, int length)
 	int total_sent = 0;
 	while(total_sent < length)
 	{
-		int bytes_sent = send(socket_fd, data + total_sent, length - total_sent,0);
+		ssize_t bytes_sent = send(socket_fd, data + total_sent, (size_t)(length - total_sent),0);
+
+		if (bytes_sent==-1 && errno==EINTR) {
+			continue;
+		}
 
 		if(bytes_sent <= 0){
+			if (bytes_sent==0) {
+				errno=EPIPE;
+			}
+
 			return -1; //if sending fails
 		}
 
-		total_sent = total_sent + bytes_sent;
+		total_sent = total_sent + (int)bytes_sent;
 
 	}
 	return total_sent;
@@ -36,6 +44,9 @@ int recv_all(int socket_fd, void *buffer, size_t length)
 		ssize_t bytes_received = recv(socket_fd , (char*)buffer + total_received , length - total_received,0); //ssize_t since recv rets -1 on error
 
 		if(bytes_received < 0){
+			if (errno==EINTR) { //retry an interrupted receive
+				continue;
+			}
 			return -1; //if sending fails
 		}
 
