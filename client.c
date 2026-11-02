@@ -12,11 +12,23 @@
 #include "protocol.h" //port, default_ip, send_command(),...
 
 
-#define MAX_SIZE 256 // max input line length; newline included
+#define MAX_SIZE 256 // max input line length; newline included, for input, we resereve space for newline and 
+//the terminating '\0' added by C strings
 
-/* The following determines how the client and the server communicate. The client sends the command given by the user
-the server answers with chunks of output, each one equivalent to 4-bytes in length + any remaining
-then the server ends the answer with a length of 0, so the lcient knows the command is successfully finished*/
+/* The following determines how the client and the server communicate. 
+
+The client reads a command entered by the user
+The cleints sends the command to the server, icnluding a newline
+The server executes the command and sends the outpit nalc to the client 
+
+The server sends the output in chunks. Before each chunk, ot sends a 4-byte integer indicating how many bytes belong to that chunk.
+
+The client first reads this 4-byte header, then reads hat many bytes of output 
+
+When a server sends a length of zero, it means the output of the current command is completely finsihed
+The ckient displays the received output and returns to the prompt to allow the user to enter the command
+
+*/
 
 int main(void)
 {
@@ -24,11 +36,10 @@ int main(void)
 	char line[MAX_SIZE]; //the command types by the user 
 	char server_response[MAX_SIZE]; //holds a piece of the server's output at a time
 	const char *ip = default_ip; // server address
-	//int port = PORT; //port required for communication
-
-
 
 	//if the server disappears or disconnects, send() must return an error instead of killing the client
+
+	//Ignoring SIGPIPE allows the client to execute and detect send fialure through its return value instead of getting immediately terminated
 
 	signal (SIGPIPE, SIG_IGN);
 
@@ -151,37 +162,34 @@ int main(void)
 		line [length] = '\0'; //remove the newline
 
 		//check if the user entered the exit command; we check after sending it so the server also receives the command and 
-		//shuts down. Only "exit" alone counts a command to terminate the programs, other variations are cosnidered as 
+		//shuts down. Only "exit" alone counts a command to terminate the programs, other exit variations are considered as 
 		//normal commands
-		
-		// char word1[MAX_SIZE];
-		// char word2[MAX_SIZE];
-		// int word_count = sscanf(line, "%255s %255s", word1, word2);
 
-		// if(word_count == 1 && strcmp(word1, "exist")==0)
-		// {
-		// 	break; //the client disconnects
-		// }
+		// RECEIVE THE SERVER'S RESPONSE
+		// cmd_finished tracks whether the server has completely transmitted the output of the current command
 
-		//Receive the server's response; a length of 0 means the command results have been 
-		//completely sent from the server. A response arrives in chuncls 
-
+		// 0 means the resposne is stilll being received and 1 means the server sent the zero length completion marker
 		int cmd_finished = 0;
-		char last_character = '\n';
+		char last_character = '\n'; //this remembers the last byte printed form the server's output, it is initialized
+		//to newline so that when the server prudces no output, an unnecesary newline is not added
 
+		// Continue receiving until the server indicates that the current command's output is completely finished 
 		while(!cmd_finished)
 		{
 			uint32_t network_length;
 
-			//first receive the four-byte length header
+			//Receive the 4-byte length header: the server dis sends an integer representing the number
+			//of output bytes in the next chunk. recv_all() calls the function menat to receive all the bytes requested for a command
 			int result = recv_all(fd_socket, &network_length, sizeof(network_length));
 
+			//if recv_all() returns 0, the server disconnected before completing the expected communication
 			if (result == 0)
 			{
 				fprintf(stderr, "Server disconnected\n");
 				break;
 			}
 
+			//otherwise a communication error happened
 			if (result == -1)
 			{
 				perror("Receive failed");
@@ -191,7 +199,9 @@ int main(void)
 			// Convert the received length into the host's byte order
 			uint32_t remaining = ntohl(network_length);
 
-			//A length of 0 indicates that the command is complete
+			//Check for the end of response marker
+			// A length of 0 means that the server has finished sending the output of the current command
+			//No output bytes follow this header so we mark the command as finsihed and return to the outer command loop
 
 			if(remaining == 0)
 			{
@@ -199,9 +209,14 @@ int main(void)
 				continue;
 			}
 
+			//Receive the output chunk; here remianing tells us how many bytes belong to thsi chunk. We receive
+			//the outpyt in smaller pieces using server_response insead of allocating a large buffer enough to hold the entire command output
 			while(remaining > 0)
 			{
 				size_t chunk;
+
+				//This determines the number of bytes we have to receive, if the number is smaller than the buffer capacity
+				//we receive only the remaining bytes, otherwise, we receive one full buffer
 
 				if(remaining < sizeof(server_response))
 				{
@@ -212,8 +227,11 @@ int main(void)
 					chunk = sizeof(server_response);
 				}
 
+				//recv_all() handles cases where the output arrives pver multiple transmissions
+
 				int received = recv_all (fd_socket, server_response, chunk);
 
+				//if the server disconnects before sending all the expected output bytes, receiving is stopped as well
 				if (received == 0)
 				{
 					fprintf(stderr, " Server disconnected\n");
@@ -226,30 +244,33 @@ int main(void)
 					break;
 				}
 
-				// display the bytes received
+				// display the received output
 
-				fwrite(server_response, 1, chunk, stdout);
-				last_character = server_response [chunk - 1];
+				fwrite(server_response, 1, chunk, stdout); //This prints exactly chunk bytes and is used becuase the received output is raw data instead
+				//of strings terminated by '\0'
+				last_character = server_response [chunk - 1]; // this keeps the last byte displayed so we can determine whether the server'soutput ended with a
+				//newline or not
 
-				remaining = remaining - chunk;
+				remaining = remaining - chunk;// decerease the remianing by the number of bytes already received. this tracks how much 
+				//output is still expected for the current chunk 
 
 			}
 
 			if (remaining > 0)
 			{
-				break;
+				break; //if some output bytes are missing, stop reading
 			}
 
 		}
 
 		if(!cmd_finished)
 		{
-			break;
+			break; //if the zero length completion marker is not received, break the connection
 		}
 
 		if(last_character != '\n')
 		{
-			printf("\n");
+			printf("\n"); //ensure output ends with a newline, so the next command prompt can start on a newline
 		}
 
 		fflush(stdout);
