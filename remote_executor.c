@@ -19,19 +19,24 @@
 #define WORKER_FAILED 20
 
 
-// static int display_command_output(const char *buffer, size_t byte_count) { //output handling
-//     if (fwrite(buffer, 1, byte_count, stdout) != byte_count) { //capture output in bytes
-//         errno=EIO;
-//         return -1;
-//     }
+static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-//     if (fflush(stdout)==EOF) //show output immediately
-//     {
-//         return -1;
-//     }
+void log_lock(void)
+{
+    pthread_mutex_lock(&log_mutex);
+}
 
-//     return 0;
-// }
+void log_unlock(void)
+{
+    pthread_mutex_unlock(&log_mutex);
+}
+
+typedef struct{
+    char *data; //collected output
+    size_t length; //bytes stored in data
+    int started; //check if any output is received
+    int error_mode; //was the output an error
+}Outputlog;
 
 static int send_command_output(int client_socket, const char *buffer, size_t byte_count) { //send 1 chunk of captured stdout/stderr to client
     return send_chunk(client_socket, buffer, byte_count);
@@ -87,6 +92,16 @@ static void run_command_worker(const char *command, int capture_read, int captur
     //stdin now has its own reference to /dev/null
     close(input_fd);
 
+    long max_fd = sysconf(_SC_OPEN_MAX);
+
+    if (max_fd < 0 || max_fd>4096){
+        max_fd = 4096;
+    }
+
+    for (int fd = STDERR_FILENO + 1; fd < max_fd; fd++){
+        close(fd);
+    }
+
     char line[MAX_SIZE];
     memcpy(line, command, strlen(command) + 1); //work on copy cuz find_pipes() modifies the line when splitting pipelines
 
@@ -114,13 +129,33 @@ static void run_command_worker(const char *command, int capture_read, int captur
         finish_worker(WORKER_FAILED);
     }
 
-    //parse_result == 0: empty command, nothing to execute
-    //parse_result == -1: parser already printed its diagnostic
     free(commands);
     finish_worker(WORKER_COMPLETE);
 }
 
-static void log_output_chunk(const char *command, const char *buffer, size_t count, int *started, int *error_mode) //detects err by looking for Phase 1's msg text
+static void log_output_chunk(Outputlog *output_log, const char *buffer, size_t count){
+    if(!output_log->started)
+    {
+        output_log->started = 1;
+
+        if (strstr(buffer, "Command not found") != NULL)
+        {
+            output_log->error_mode = 1;
+        }
+    }
+
+    char *grown = realloc(output_log->data, output_log->length + count);
+    if (grown == NULL)
+    {
+        return;
+    }
+
+    memcpy(grown + output_log->length, buffer, count);
+    output_log->data = grown;
+    output_log->length += count;
+}
+
+/*static void log_output_chunk(const char *command, const char *buffer, size_t count, int *started, int *error_mode) //detects err by looking for Phase 1's msg text
 {
     if (!*started) {
         *started = 1;
@@ -145,6 +180,46 @@ static void log_output_chunk(const char *command, const char *buffer, size_t cou
 
     fwrite(buffer, 1, count, stdout); //normal output is printed exactly as the cmd produced it
     fflush(stdout);
+}*/
+
+static void print_output_chunk(const char *command, const char *client_label, const Outputlog *output_log) 
+{
+    if (!output_log->started) { //command produced no output; nothing to log
+        return;
+    }
+    
+    log_lock();
+
+    if(output_log->error_mode){
+        size_t count = output_log->length;
+
+        while (count>0 && output_log->data[count-1] == '\n') { //remove trailing newlines
+            count--;
+        }
+
+        printf("[ERROR] [%s] Command not found: \"%s\"\n", client_label, command);
+        printf("[OUTPUT] [%s] Sending error message to client: \"", client_label);
+        fwrite(output_log->data,1,count,stdout);
+        printf("\"\n\n");
+        fflush(stdout);
+        
+    }
+
+    else{
+        printf("[OUTPUT] [%s] Sending output to client:\n", client_label);
+        fwrite(output_log->data, 1, output_log->length, stdout); //normal output is printed exactly as the cmd produced it
+
+        if(output_log->data[output_log->length -1] != '\n'){
+            printf("\n");
+        }
+
+        printf("\n");
+
+    }
+
+    fflush(stdout); //flush before unlocking so stdout's buffer is empty whenever the lock is free 
+
+    log_unlock();
 }
 
 
@@ -160,13 +235,17 @@ int execute_remote_command(const char *command, int client_socket)
         return -1;
     }
 
+    log_lock();
+
     if (fflush(NULL) == EOF) { //flush parent output before fork
+        log_unlock();
         return -1;
     }
 
     int capture_pipe[2];
 
     if (pipe(capture_pipe) == -1) {
+        log_unlock();
         return -1;
     }
 
@@ -176,6 +255,7 @@ int execute_remote_command(const char *command, int client_socket)
         int saved_error = errno; //preserve the fork error while cleaning up pipe
         close(capture_pipe[0]);
         close(capture_pipe[1]);
+        log_unlock();
         errno = saved_error;
         return -1;
     }
@@ -186,11 +266,10 @@ int execute_remote_command(const char *command, int client_socket)
     }
 
     close(capture_pipe[1]); //parent: read only
+    log_unlock(); // other threads may print and fork again
 
     char buffer[4096+1]; //+1 so each chunk can be null-terminated for strstr()
-    int output_started = 0; //has the [OUTPUT] header been logged?
-    int error_mode = 0; //was the output a "Command not found" error?
-    char last_character = '\n';
+    Outputlog output_log = {0};
     int saved_error = 0;
 
 
@@ -201,8 +280,8 @@ int execute_remote_command(const char *command, int client_socket)
         if (bytes_read>0) {
             if (saved_error==0) {
                 buffer[bytes_read] = '\0';
-                log_output_chunk(command, buffer, (size_t)bytes_read, &output_started, &error_mode);
-                last_character = buffer[bytes_read-1];
+                log_output_chunk(&output_log, buffer, (size_t)bytes_read);
+                
                 if (send_command_output(client_socket, buffer, (size_t)bytes_read)== -1) {
                     if (errno!=0) {
                         saved_error=errno;
@@ -230,13 +309,8 @@ int execute_remote_command(const char *command, int client_socket)
 
     close(capture_pipe[0]);
 
-    if (output_started && !error_mode) { //add blank line after cmd's normal output (Fig 1)
-        if (last_character != '\n') {
-            printf("\n"); //finish an unterminated last line first
-        }
-        printf("\n");
-        fflush(stdout);
-    }
+    print_output_log(command, client_label, &output_log);
+    free(output_log.data);
 
     int worker_status; //collect worker status, no zombies
     pid_t waited;

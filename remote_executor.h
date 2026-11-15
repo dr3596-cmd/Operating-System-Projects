@@ -5,7 +5,11 @@
 
 //parse & execute 1 complete cmd
 //returns: 0 if request handled, 1 if exit cmd, -1 if execution-wrapper or output handling failure
-int execute_remote_command(const char *command, int client_socket);
+int execute_remote_command(const char *command, int client_socket, const char *client_label);
+
+//so lines from different client threads never mix inside the block
+void log_lock(void);
+void log_unlock(void);
 
 
 #endif
