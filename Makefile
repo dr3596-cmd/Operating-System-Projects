@@ -1,6 +1,7 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -g
+CFLAGS = -Wall -Wextra -g -pthread
 
+LDFLAGS = -pthread
 SHELL_OBJS = myshell.o parser.o executor.o
 CLIENT_OBJS = client.o protocol.o
 SERVER_OBJS = server.o remote_executor.o parser.o executor.o protocol.o

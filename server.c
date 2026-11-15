@@ -6,6 +6,8 @@
 #include <sys/socket.h> //socket(), bind(), listen(), accept(), recv()
 #include <unistd.h> //close()
 #include <signal.h> //SIGPIPE handling
+#include <pthread.h> //pthread_create(), pthread_detach()
+#include <string.h> //strerror()
 
 #include "parser.h"
 #include "protocol.h"
@@ -13,9 +15,12 @@
 
 // Function executed by each thread to handle communication with multiple clients
 
-void* Threadfunction(void *client_socket){
-    int new_socket = *(int *)arg; //Get the client socket file descriptor
+void* Threadfunction(void *arg)
+{
+    int client_socket = *(int *)arg; //Get the copy of the client socket file descriptor
 
+    int thread_status = EXIT_SUCCESS; //becomes EXIT_FAILURE if the session ends because of an error
+    free(arg);
     fflush(stdout);
 
     char command[MAX_SIZE]; // Buffer to store incoming messages from the client
@@ -30,7 +35,7 @@ void* Threadfunction(void *client_socket){
         }
         if (received==-1) { //end sesh after failure
             perror("Server: command reception failed");
-            server_status = EXIT_FAILURE;
+            thread_status = EXIT_FAILURE;
             break;
         }
 
@@ -43,7 +48,7 @@ void* Threadfunction(void *client_socket){
 
         if (result==-1) {
             perror("Server: execution or output transfer failed");
-            server_status = EXIT_FAILURE;
+            thread_status = EXIT_FAILURE;
             break;
         }
         if (result==1){
@@ -53,25 +58,34 @@ void* Threadfunction(void *client_socket){
 
         if (send_marker(client_socket) == -1) { //all output has been forwarded.
             perror("Server: completion send failed");
-            server_status = EXIT_FAILURE;
+            thread_status = EXIT_FAILURE;
             break;
         }
 
         fflush(stdout);
     }
 
-    close(client_socket); //release connected socket before terminating server
-    printf("Server: shutting down.\n");
+    close(client_socket); //release connected socket
 
-    return server_status;
+    if(thread_status == EXIT_FAILURE)
+    {
+        printf("[INFO] Client session ended due to an error\n");
+    }
+
+    else {
+        printf("[INFO] Client session ended\n");
+    }
+
+    fflush(stdout);
+    return NULL;
 
 
 }
 
-int main(void) //currently 1 TCP connection & observes incoming data
+int main(void) 
 {
-    int client_counter = 0;
-    int server_socket, client_socket; //server_socket is the main server socket while new_socket is for each connected client
+    int client_counter = 0; //keep up with client's number 
+    int server_socket, client_socket; //server_socket is the main server socket while client_socket is for each connected client
     if (signal(SIGPIPE,SIG_IGN)==SIG_ERR) { //disconnected client => send() reports error
         perror("Server: SIGPIPE setup failed");
         return EXIT_FAILURE;
@@ -117,12 +131,8 @@ int main(void) //currently 1 TCP connection & observes incoming data
     struct sockaddr_in client_address;
     //setting length of the client address structure 
     socklen_t client_length; //socklen_t directly as type (not int)
-    int *client_fd= malloc(sizeof(int));
-    *client_fd = client_socket;
 
     while(1){
-        //clear the buffer to receive new message form the client
-        bzero(buffer, MAX_SIZE);
 
         //Accept a new connection from a client
         do {
@@ -138,9 +148,22 @@ int main(void) //currently 1 TCP connection & observes incoming data
         }
         printf("[INFO] Client %d connected.\n",client_counter);
 
+        int *client_fd= malloc(sizeof(int));
+        *client_fd = client_socket;
+
         //we need to continue listening to multiple clients
         pthread_t thread; //Declare a thread identifier 
-        pthread_create(&thread, NULL, Threadfunction, (void*)&client_fd);//start a new thread and pass the client's socket
+
+        int thread_error = pthread_create(&thread, NULL, Threadfunction, client_fd);//start a new thread and pass the client's socket
+
+        if (thread_error != 0)
+        {
+            fprintf(stderr, "pthread create failed: %s\n", strerror(thread_error));
+            free(client_fd);
+            close(client_socket);
+            continue;
+        }
+
         pthread_detach(thread); //detach the thread to allow it to clean up its resources when done
 
     }
