@@ -27,7 +27,7 @@ void* Threadfunction(void *arg)
         int received = receive_command(client_socket, command, sizeof(command)); //receive compelte cmd
 
         if (received==0) {
-            printf("[INFO] Client disconnected.\n");
+            //printf("[INFO] Client disconnected.\n");
             break;
         }
         if (received==-1) { //end sesh after failure
@@ -35,7 +35,6 @@ void* Threadfunction(void *arg)
             break;
         }
 
-        printf("\n");
         log_event(client_info, "RECEIVED", "Received command: \"%s\"",command);
 
         if(strcmp(command, "exit")==0){
