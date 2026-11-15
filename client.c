@@ -51,7 +51,7 @@ int main(void)
 
 	//check for fail error
 	if (fd_socket == -1) {
-        printf("socket creation failed..\n");
+        perror("Socket creation failed\n");
         exit(EXIT_FAILURE);
     }
     
@@ -106,16 +106,17 @@ int main(void)
 
 	// loop: read a command, send to server, display the answer
 
+	int client_status=EXIT_SUCCESS;
  
     while(1)
     {
         printf("$ "); //client presents a prompt to the user
 		fflush(stdout);
 
-        //fgets returns NULL on end of input (Ctrl + D); leaves the shell clean, closes the socket and makes the server shut down too
+        //fgets returns NULL on end of input (Ctrl + D). close this client only; the server keeps running
         if (fgets(line, sizeof(line), stdin)==NULL)
         {
-            printf("\n");
+            printf("\nDisconnected from server.\n");
             break;
         }
 
@@ -142,7 +143,7 @@ int main(void)
 
 		line [strcspn(line, "\n")] = '\0'; // remove the newline
 
-		if(line [strspn(line, "\t")] == '\0')
+		if(line [strspn(line, " \t")] == '\0')
 		{
 			continue;
 		}
@@ -156,10 +157,17 @@ int main(void)
 		if(bytes_sent == -1)
 		{
 			perror("Send failed!");
+			client_status=EXIT_FAILURE;
 			break;
 		}
 
 		line [length] = '\0'; //remove the newline
+
+		//to know whether a server close right after this is expected
+		char first_word[MAX_SIZE];
+		char second_word[MAX_SIZE];
+		int word_count = sscanf(line, "%255s %255s", first_word, second_word);
+		int exit_sent = (word_count==1 && strcmp(first_word,"exit") == 0);
 
 		//check if the user entered the exit command; we check after sending it so the server also receives the command and 
 		//shuts down. Only "exit" alone counts a command to terminate the programs, other exit variations are considered as 
@@ -171,6 +179,8 @@ int main(void)
 		// 0 means the resposne is stilll being received and 1 means the server sent the zero length completion marker
 		int cmd_finished = 0;
 		char last_character = '\n'; //this remembers the last byte printed form the server's output, it is initialized
+		int output_received = 0;   //becomes 1 once any output byte is printed
+
 		//to newline so that when the server prudces no output, an unnecesary newline is not added
 
 		// Continue receiving until the server indicates that the current command's output is completely finished 
@@ -185,7 +195,12 @@ int main(void)
 			//if recv_all() returns 0, the server disconnected before completing the expected communication
 			if (result == 0)
 			{
-				fprintf(stderr, "Disconnected from server.\n");
+				if(exit_sent) { 
+					printf("Disconnected from server.\n");  
+   				} else {
+					fprintf(stderr, "Server disconnected\n"); //after "exit" the server should close
+					client_status=EXIT_FAILURE;
+				}
 				break;
 			}
 
@@ -193,6 +208,7 @@ int main(void)
 			if (result == -1)
 			{
 				perror("Receive failed");
+				client_status=EXIT_FAILURE;
 				break;
 			}
 
@@ -235,19 +251,26 @@ int main(void)
 				if (received == 0)
 				{
 					fprintf(stderr, " Server disconnected\n");
+					client_status=EXIT_FAILURE;
 					break;
 				}
 
 				else if (received == -1)
 				{
 					perror ("Receive failed");
+					client_status=EXIT_FAILURE;
 					break;
 				}
 
 				// display the received output
 
-				fwrite(server_response, 1, chunk, stdout); //This prints exactly chunk bytes and is used becuase the received output is raw data instead
-				//of strings terminated by '\0'
+				if (fwrite(server_response, 1, chunk, stdout) !=chunk) {
+					fprintf(stderr, "Client: output display failed.\n");
+					client_status=EXIT_FAILURE;
+					break;
+				} //This prints exactly chunk bytes and is used becuase the received output is raw data instead of strings terminated by '\0'
+
+				output_received=1;
 				last_character = server_response [chunk - 1]; // this keeps the last byte displayed so we can determine whether the server'soutput ended with a
 				//newline or not
 
@@ -268,9 +291,16 @@ int main(void)
 			break; //if the zero length completion marker is not received, break the connection
 		}
 
-		if(last_character != '\n')
-		{
-			printf("\n"); //ensure output ends with a newline, so the next command prompt can start on a newline
+		if (output_received) {
+			if (last_character != '\n') {
+				printf("\n"); //finish an unterminated last line
+			}
+			printf("\n"); //blank line between commands
+		}
+
+		if (exit_sent) {
+			printf("Disconnected from server.\n");   //server sent the end marker for exit
+			break;
 		}
 
 		fflush(stdout);
@@ -281,5 +311,5 @@ int main(void)
     //close socket after we are done
 	close(fd_socket);
 
-	return 0;
+	return client_status;
 }
