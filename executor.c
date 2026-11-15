@@ -118,11 +118,11 @@ void execute_commands(Command commands[], int commandctr)
             {
                 if(commandctr > 1)
                 {
-                    fprintf(stderr, "Error: Command not found in the pipe sequence!\n");
+                    fprintf(stderr, "Command not found in the pipe sequence: %s\n", commands[i].args[0]);
                 }
 
                 else {
-                    fprintf(stderr, "Error: Command not found!\n");
+                    fprintf(stderr, "Command not found: %s\n", commands[i].args[0]);
                 }
             }
 
