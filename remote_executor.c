@@ -19,18 +19,6 @@
 #define WORKER_FAILED 20
 
 
-static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-void log_lock(void)
-{
-    pthread_mutex_lock(&log_mutex);
-}
-
-void log_unlock(void)
-{
-    pthread_mutex_unlock(&log_mutex);
-}
-
 typedef struct{
     char *data; //collected output
     size_t length; //bytes stored in data
@@ -155,80 +143,59 @@ static void log_output_chunk(Outputlog *output_log, const char *buffer, size_t c
     output_log->length += count;
 }
 
-/*static void log_output_chunk(const char *command, const char *buffer, size_t count, int *started, int *error_mode) //detects err by looking for Phase 1's msg text
-{
-    if (!*started) {
-        *started = 1;
-
-        if (strstr(buffer, "Command not found") != NULL) { //Phase 1 prints "Error: Command not found!" for ENOENT
-            *error_mode = 1;
-
-            while (count>0 && buffer[count-1] == '\n') { //remove trailing newlines
-                count--;
-            }
-
-            printf("[ERROR] Command not found: \"%s\"\n", command);
-            printf("[OUTPUT] Sending error message to client: \"");
-            fwrite(buffer,1,count,stdout);
-            printf("\"\n");
-            fflush(stdout);
-            return;
-        }
-
-        printf("[OUTPUT] Sending output to client:\n");
-    }
-
-    fwrite(buffer, 1, count, stdout); //normal output is printed exactly as the cmd produced it
-    fflush(stdout);
-}*/
-
-static void print_output_chunk(const char *command, const char *client_label, const Outputlog *output_log) 
+static void print_output_log(const char *command, const ClientInfo *client, Outputlog *output_log) 
 {
     if (!output_log->started) { //command produced no output; nothing to log
         return;
     }
-    
-    log_lock();
 
-    if(output_log->error_mode){
-        size_t count = output_log->length;
+    if(output_log->error_mode)
+    {
 
-        while (count>0 && output_log->data[count-1] == '\n') { //remove trailing newlines
-            count--;
-        }
+        log_error_response(client, command, output_log->data, output_log ->length);
+        return;
+    }
 
-        printf("[ERROR] [%s] Command not found: \"%s\"\n", client_label, command);
-        printf("[OUTPUT] [%s] Sending error message to client: \"", client_label);
-        fwrite(output_log->data,1,count,stdout);
-        printf("\"\n\n");
-        fflush(stdout);
+    if(output_log->length == 0){
+        log_event(client, "OUTPUT", "Sending output to client:");
+        return;
+    }
+
+    char lastchr = output_log->data[output_log->length - 1];
+    size_t ending_length = (lastchr == '\n') ? 1 : 2;
+
+    char *grown = realloc(output_log->data, output_log->length + ending_length);
+
+    if(grown == NULL)
+    {
+        log_event_with_data(client, "OUTPUT", "Sending output to client:", output_log->data, output_log->length);
+        log_output_end(lastchr);
+        return;
+    }
+
+    output_log->data = grown;
+
+    if(ending_length == 2)
+    {
+        output_log->data[output_log->length++] = '\n';
+    }
+
+    output_log->data[output_log->length++] = '\n';
+
+    log_event_with_data(client, "OUTPUT","Sending output to client:", output_log->data, output_log->length);
         
-    }
 
-    else{
-        printf("[OUTPUT] [%s] Sending output to client:\n", client_label);
-        fwrite(output_log->data, 1, output_log->length, stdout); //normal output is printed exactly as the cmd produced it
-
-        if(output_log->data[output_log->length -1] != '\n'){
-            printf("\n");
-        }
-
-        printf("\n");
-
-    }
-
-    fflush(stdout); //flush before unlocking so stdout's buffer is empty whenever the lock is free 
-
-    log_unlock();
 }
 
 
-int execute_remote_command(const char *command, int client_socket)
+int execute_remote_command(const char *command, const ClientInfo *client)
 {
-    if (command==NULL || client_socket<=STDERR_FILENO) {
+    if (command==NULL || client==NULL || client->socket<=STDERR_FILENO) {
         errno=EINVAL;
         return -1;
     }
+
+    int client_socket = client->socket;
 
     if (strlen(command) >= MAX_SIZE) {//leave room for the terminating \0 in the Phase 1 line buffer
         errno = EMSGSIZE;
@@ -309,7 +276,7 @@ int execute_remote_command(const char *command, int client_socket)
 
     close(capture_pipe[0]);
 
-    print_output_log(command, client_label, &output_log);
+    print_output_log(command, client, &output_log);
     free(output_log.data);
 
     int worker_status; //collect worker status, no zombies

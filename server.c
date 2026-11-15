@@ -12,22 +12,14 @@
 #include "parser.h"
 #include "protocol.h"
 #include "remote_executor.h"
-
-typedef struct{
-    int client_socket; //connected socket returned by accept()
-    int client_number; //client count in connection order
-    char client_label[64]; //Client #N = ip;port
-}ClientInfo;
+#include "log.h" //clinet info and all server log printing done here
 
 // Function executed by each thread to handle communication with multiple clients
 
 void* Threadfunction(void *arg)
 {
-    ClientInfo *clinet_info = (ClientInfo *)arg; 
-    int client_socket = client_info->client_socket;
-    const char *client_label = client_info -> client_label;
-
-    int thread_status = EXIT_SUCCESS; //becomes EXIT_FAILURE if the session ends because of an error
+    ClientInfo *client_info = (ClientInfo *)arg; 
+    int client_socket = client_info->socket;
     char command[MAX_SIZE]; // Buffer to store incoming messages from the client
 
     while (1)
@@ -39,67 +31,38 @@ void* Threadfunction(void *arg)
             break;
         }
         if (received==-1) { //end sesh after failure
-            perror("Server: command reception failed");
-            thread_status = EXIT_FAILURE;
+            log_failure(client_info, "Command reception failed", errno);
             break;
         }
 
-        int exit_requested = (strcmp(command, "exit") == 0);
+        log_event(client_info, "RECEIVED", "Received command: \"%s\"",command);
 
-        log_lock();
-        printf("[RECEIVED] [%s] Received command: \"%s\"\n", client_label, command);
-
-        if(exit_requested){
-            printf("[INFO] [%s] Client requested disconnect. Closing connection.\n", client_label);
+        if(strcmp(command, "exit")==0){
+            log_event(client_info, "INFO", "Client requested disconnect. Closing connection.");
+            break; //end only this client's session and keep accepting other clients
         }
 
-        else{
-            printf("[EXECUTING] [%s] Executing command: \"%s\"\n", client_label, command);
-        }
-        
-        fflush(stdout);
-        log_unlock();
+        log_event(client_info, "EXECUTING", "Executing command: \"%s\"",command);
 
-        if(exit_requested){
-            break; // end only this client's session
-        }
-
-        int result = execute_remote_command(command, client_socket, client_label);
+        int result = execute_remote_command(command, client_info);
 
         if (result==-1) {
-            perror("Server: execution or output transfer failed");
-            thread_status = EXIT_FAILURE;
+            log_failure(client_info, "Execution or output transfer failed", errno);
             break;
         }
-        if (result==1){ // "exit" entered with multiple spaces
-            log_lock();
-            printf("[INFO] [%s] Exit command received; shutting down.\n", client_label);
-            fflush(stdout);
-            log_unlock();
+        if (result==1){ // parser itself reported exit
+            log_event(client_info, "INFO", "Client requested disconnect. Closing connection.");
             break;
         }
 
         if (send_marker(client_socket) == -1) { //all output has been forwarded.
-            perror("Server: completion send failed");
-            thread_status = EXIT_FAILURE;
+            log_failure(client_info, "Execution or output transfer failed", errno);
             break;
         }
     }
 
-    log_lock();
-
-    if(thread_status == EXIT_FAILURE)
-    {
-        printf("[INFO] Client #%d disconnected (session ended due to an error).\n", client_info->client_number);
-    }
-
-    else {
-        printf("[INFO] Client #%d disconnected.\n", client_info->client_number);
-    }
-
-    fflush(stdout);
-    log_unlock();
-
+    log_client_disconnected(client_info);
+    close(client_socket); //release this client's socket; the server keeps running
     free(client_info); // free this client's details
     return NULL;
 
@@ -149,8 +112,7 @@ int main(void) //multithreaded TCP server; one thread per connected client
         return EXIT_FAILURE;
     }
 
-    printf("[INFO] Server started, waiting for client connections...\n"); //listen success. socket is a listening socket
-    fflush(stdout);
+    log_event(NULL, "INFO", "Server started, waiting for client connections...");
 
     struct sockaddr_in client_address;
     //setting length of the client address structure 
@@ -166,48 +128,38 @@ int main(void) //multithreaded TCP server; one thread per connected client
         while (client_socket == -1 && errno==EINTR);
 
         if (client_socket == -1) {
-            perror("Server: accept failed");
+            log_failure(NULL, "Accept failed", errno);
             continue; //continue to the next iteration
         }
 
-        client_counter++; 
+        client_counter++;  //counted only after a successful accept()
 
         //Build the client's info 
 
-        ClientInfo *client_info = malloc(sizeof(*client_info));
+        ClientInfo *client_info = malloc(sizeof(*client_info)); //each client gets its own struct so threads don't share data
 
         if (client_info == NULL) //refuse the client but keep the server running
         {
-            perror("Server: client info allocation failed");
+            log_failure(NULL, "Client info allocation failed", errno);
             close(client_socket);
             continue;
 
         }
 
-        char client_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &client_address.sin_addr, client_ip, sizeof(client_ip));
-        int client_port = ntohs(client_address.sin_port);
+        //fill id, socket, ip text and port number
+        client_info_init(client_info, client_counter, client_socket, &client_address);
 
-        client_info -> client_socket = client_socket;
-        client_info -> client_number = client_counter;
-        snprintf(client_info -> client_label, sizeof(client_info -> client_label),"Client #%d - %s:%d", client_counter, client_ip, client_port);
-
-        log_lock();
-        printf("[INFO] Client #%d connected from %s:%d. Assigned to Thread-%d.\n",
-            client_counter, client_ip, client_port, client_counter);
-
-        fflush(stdout);
-        log_unlock();
+        log_client_connected(client_info);
 
         //we need to continue listening to multiple clients
         pthread_t thread; //Declare a thread identifier 
 
-        int thread_error = pthread_create(&thread, NULL, Threadfunction, client_fd);//start a new thread and pass the client's socket
+        int thread_error = pthread_create(&thread, NULL, Threadfunction, client_info);//start a new thread and pass the client's socket
 
         if (thread_error != 0)
         {
-            fprintf(stderr, "pthread create failed: %s\n", strerror(thread_error));
-            free(client_fd);
+            log_failure(client_info, "THread creation failed", thread_error);
+            free(client_info);
             close(client_socket);
             continue;
         }
