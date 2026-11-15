@@ -185,7 +185,7 @@ int main(void)
 			//if recv_all() returns 0, the server disconnected before completing the expected communication
 			if (result == 0)
 			{
-				fprintf(stderr, "Server disconnected\n");
+				fprintf(stderr, "Disconnected from server.\n");
 				break;
 			}
 

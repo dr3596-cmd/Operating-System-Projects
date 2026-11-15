@@ -35,6 +35,7 @@ void* Threadfunction(void *arg)
             break;
         }
 
+        printf("\n");
         log_event(client_info, "RECEIVED", "Received command: \"%s\"",command);
 
         if(strcmp(command, "exit")==0){
@@ -158,7 +159,7 @@ int main(void) //multithreaded TCP server; one thread per connected client
 
         if (thread_error != 0)
         {
-            log_failure(client_info, "THread creation failed", thread_error);
+            log_failure(client_info, "Thread creation failed", thread_error);
             free(client_info);
             close(client_socket);
             continue;
